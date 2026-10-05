@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.5')
+script_version('1.0.6')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -18,7 +18,24 @@ end
 
 local AUTHOR = 'jalisco'
 local CONFIG_PATH = getWorkingDirectory() .. '\\config\\TimeShot.json'
-local BASE_DIR = getFolderPath(5) .. '\\GTA San Andreas User Files\\TimeShot by Jalisco'
+local BASE_DIR, BASE_FALLBACK = nil, false
+do
+    local documents = getFolderPath(5)
+    local fallback = getWorkingDirectory() .. '\\TimeShot'
+    local preferred = type(documents) == 'string' and documents ~= ''
+        and (documents .. '\\GTA San Andreas User Files\\TimeShot by Jalisco') or nil
+    local function usable(dir)
+        if doesDirectoryExist(dir) then return true end
+        pcall(createDirectory, dir)
+        return doesDirectoryExist(dir)
+    end
+    if preferred and usable(preferred) then
+        BASE_DIR = preferred
+    else
+        usable(fallback)
+        BASE_DIR, BASE_FALLBACK = fallback, true
+    end
+end
 local TEMP_FILE = BASE_DIR .. '\\_timeshot_tmp.jpg'
 local NOTES_DIR = BASE_DIR .. '\\' .. cp('Заметки')
 local WEEK_PATTERN = '^%d%d%.%d%d%.%d%d%d%d %- %d%d%.%d%d%.%d%d%d%d$'
@@ -185,8 +202,8 @@ end
 local function ensureDir(path)
     if doesDirectoryExist(path) then return true end
     local parent = path:match('^(.*)\\[^\\]+$')
-    if parent and not parent:match('^%a:$') then ensureDir(parent) end
-    createDirectory(path)
+    if parent and parent ~= '' and not parent:match('^%a:$') then ensureDir(parent) end
+    pcall(createDirectory, path)
     return doesDirectoryExist(path)
 end
 
@@ -3310,6 +3327,9 @@ function main()
     sampAddChatMessage(u8:decode('TimeShot {FFFFFF}by {FFD166}jalisco {808080}| {4FA3FF}/t {FFFFFF}- скриншот {808080}| {4FA3FF}/tmenu {FFFFFF}- меню {808080}| {4FA3FF}/td {FFFFFF}- чат департамента'), 0x4FA3FF)
 
     wait(3000)
+    if BASE_FALLBACK then
+        notify('Папка в «Документах» недоступна, скриншоты и заметки сохраняю в {4FA3FF}moonloader\\TimeShot')
+    end
     if deadlineDay() then remindDeadline() end
     update.check(false)
 
