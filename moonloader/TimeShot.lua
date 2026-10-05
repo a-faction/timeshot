@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.1')
+script_version('1.0.3')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -1922,8 +1922,8 @@ function tabs.govTab(W)
     if button('primary', 'Открыть рацию /d', W) then radioWindow[0] = true end
 end
 
-function tabs.settingsTab(W)
-    card(W, 'НЕДЕЛИ', function(w)
+function tabs.shotSettings(W)
+    card(W, 'ПАПКИ ПО НЕДЕЛЯМ', function(w)
         toggle('Раскладывать скриншоты по неделям', 'weekly')
         if cfg.weekly then
             local side = (w - 8) / 2
@@ -1938,11 +1938,13 @@ function tabs.settingsTab(W)
                 saveConfig()
                 refreshStats()
             end
+            dim('Текущая неделя: ' .. weekFolder())
         end
     end)
 
     card(W, 'ЗАДЕРЖКА МЕЖДУ /time И СКРИНШОТОМ', function(w)
         slider('delay', 200, 3000, '%d мс', w)
+        dim('Увеличь, если /time не успевает появиться на скриншоте.')
     end)
 
     card(W, 'АВТОСКРИНШОТ С /time И ЗАПИСЬ В ЖУРНАЛ', function(w)
@@ -1952,7 +1954,57 @@ function tabs.settingsTab(W)
         divider(w)
         toggle('Команды МЮ: /su, /ticket, /take', 'autoJustice')
     end)
+end
 
+function tabs.widgetsTab(W)
+    card(W, 'СЧЁТЧИК ОНЛАЙНА', function(w)
+        local side = (w - 8) / 2
+        toggle('Показывать на экране##hud', 'hud')
+        divider(w)
+        label('ЧТО ПОКАЗЫВАТЬ')
+        toggle('Онлайн за сегодня', 'hudToday')
+        toggle('Онлайн за неделю', 'hudWeek')
+        toggle('Сколько осталось до нормы', 'hudNorm')
+        toggle('Статус по правилам', 'hudStatus')
+        toggle('Собеседования за сегодня', 'hudInterviews')
+        toggle('Ник и должность', 'hudNick')
+        toggle('Текущее время', 'hudTime')
+        divider(w)
+        label('ПОЛОЖЕНИЕ И РАЗМЕР')
+        slider('hudX', 0, 100, 'по горизонтали: %d%%', side)
+        imgui.SameLine()
+        slider('hudY', 0, 100, 'по вертикали: %d%%', side)
+        slider('hudSize', 11, 32, 'размер текста: %d', w)
+    end)
+
+    card(W, 'СПИСОК СОСТАВА', function(w)
+        local side = (w - 8) / 2
+        toggle('Показывать на экране##members', 'members')
+        dim('Пока включено, скрипт сам запрашивает /members с заданным интервалом.')
+        divider(w)
+        label('ЧТО ПОКАЗЫВАТЬ В СТРОКЕ')
+        toggle('Должность и ранг', 'membersRank')
+        toggle('ID игрока', 'membersId')
+        toggle('Отметка AFK', 'membersAfk')
+        divider(w)
+        label('ПОЛОЖЕНИЕ, РАЗМЕР И ОБНОВЛЕНИЕ')
+        slider('membersX', 0, 100, 'по горизонтали: %d%%', side)
+        imgui.SameLine()
+        slider('membersY', 0, 100, 'по вертикали: %d%%', side)
+        slider('membersSize', 10, 28, 'размер текста: %d', side)
+        imgui.SameLine()
+        slider('membersMax', 5, 60, 'строк на экране: %d', side)
+        slider('membersInterval', 10, 120, 'обновлять каждые %d с', side)
+        imgui.SameLine()
+        slider('membersNorm', 0, 30, 'норма онлайна: %d', side)
+    end)
+
+    card(W, 'ГОС. ВОЛНА', function(w)
+        toggle('Свободный слот и кулдаун /gov вверху экрана', 'widget')
+    end)
+end
+
+function tabs.generalTab(W)
     card(W, 'ОБНОВЛЕНИЯ', function(w)
         toggle('Обновлять автоматически при запуске', 'autoUpdate')
         divider(w)
@@ -1999,83 +2051,43 @@ function tabs.settingsTab(W)
             os.remove(avatar.path)
             avatar.dirty = true
         end
-        dim('Перед этим разверни камеру лицом к персонажу. Меню закроется на секунду. Без меню: команда tavatar.')
+        dim('Перед этим разверни камеру лицом к персонажу. Меню закроется на секунду.')
     end)
 
     card(W, 'AFK', function(w)
         toggle('Звуковой сигнал на 8-й и 9-й минуте AFK', 'afkWarn')
     end)
 
-    dim('/t — скриншот     /tmenu — меню     /td — рация     /tn — заметки     /tstop — стоп бинда')
-end
-
-function tabs.screenTab(W)
-    card(W, 'СЧЁТЧИК ОНЛАЙНА НА ЭКРАНЕ', function(w)
-        toggle('Показывать счётчик онлайна', 'hud')
-    end)
-
-    card(W, 'ЧТО ПОКАЗЫВАТЬ', function(w)
-        toggle('Онлайн за сегодня', 'hudToday')
-        divider(w)
-        toggle('Онлайн за неделю', 'hudWeek')
-        divider(w)
-        toggle('Сколько осталось до нормы', 'hudNorm')
-        divider(w)
-        toggle('Статус по правилам', 'hudStatus')
-        divider(w)
-        toggle('Собеседования за сегодня', 'hudInterviews')
-        divider(w)
-        toggle('Ник и должность', 'hudNick')
-        divider(w)
-        toggle('Текущее время', 'hudTime')
-    end)
-
-    card(W, 'ПОЛОЖЕНИЕ И РАЗМЕР', function(w)
-        slider('hudX', 0, 100, 'по горизонтали: %d%%', w)
-        slider('hudY', 0, 100, 'по вертикали: %d%%', w)
-        slider('hudSize', 11, 32, 'размер текста: %d', w)
-    end)
-
-    card(W, 'ВИДЖЕТ ГОС. ВОЛНЫ', function(w)
-        toggle('Слот собеседования и кулдаун /gov вверху экрана', 'widget')
+    card(W, 'КОМАНДЫ', function(w)
+        local commands = {
+            { '/t', 'скриншот с /time и выбором папки' },
+            { '/tmenu', 'это меню' },
+            { '/td', 'рация департамента' },
+            { '/tn', 'заметки' },
+            { '/tstop', 'остановить бинд' },
+            { '/tavatar', 'сфотографировать персонажа для аватара' },
+            { '/tupdate', 'проверить обновление' },
+        }
+        for i, command in ipairs(commands) do
+            if i > 1 then divider(w) end
+            valueRow(w, command[1], command[2], COLOR.dim)
+        end
     end)
 end
 
 function tabs.membersTab(W)
-    card(W, 'ЧЕКЕР СОСТАВА', function(w)
-        toggle('Показывать состав на экране', 'members')
-        divider(w)
+    card(W, 'ДАННЫЕ ИЗ /members', function(w)
         imgui.AlignTextToFramePadding()
         txt('Обновлено: ' .. (members.at > 0 and os.date('%H:%M:%S', members.at) or 'ещё нет'))
         alignRight(w, 170)
         if button('card', 'Обновить сейчас', 170) then lua_thread.create(requestMembers) end
-    end)
-
-    card(W, 'ЧТО ПОКАЗЫВАТЬ В СТРОКЕ', function(w)
-        toggle('Должность и ранг', 'membersRank')
-        divider(w)
-        toggle('ID игрока', 'membersId')
-        divider(w)
-        toggle('Отметка AFK', 'membersAfk')
-    end)
-
-    card(W, 'ПОЛОЖЕНИЕ, РАЗМЕР И ОБНОВЛЕНИЕ', function(w)
-        local side = (w - 8) / 2
-        slider('membersX', 0, 100, 'по горизонтали: %d%%', side)
-        imgui.SameLine()
-        slider('membersY', 0, 100, 'по вертикали: %d%%', side)
-        slider('membersSize', 10, 28, 'размер текста: %d', side)
-        imgui.SameLine()
-        slider('membersMax', 5, 60, 'строк на экране: %d', side)
-        slider('membersInterval', 10, 120, 'обновлять каждые %d с', side)
-        imgui.SameLine()
-        slider('membersNorm', 0, 30, 'норма онлайна: %d', side)
+        dim('Список на экране и автообновление включаются в разделе «Виджеты».')
     end)
 
     local title = 'В СЕТИ — ' .. #members.list .. (members.fraction ~= '' and ('  ·  ' .. members.fraction) or '')
     card(W, title, function(w)
         if #members.list == 0 then
-            dim('Список пуст. Включи чекер или нажми «Обновить сейчас».')
+            dim('Список пуст. Нажми «Обновить сейчас».')
         end
         local rows = {}
         for i, member in ipairs(members.list) do
@@ -2422,7 +2434,7 @@ function tabs.binderPanel(W)
 end
 
 local games = {
-    tab = 9,
+    tab = 10,
     mode = 'ttt',
     ttt = { board = {}, over = nil, wins = 0, losses = 0, draws = 0 },
     snake = { cols = 26, rows = 17, cell = 22 },
@@ -2686,17 +2698,20 @@ end
 
 local NOTES_TAB = 6
 local NAV = {
-    { 'ПАПКИ', 'Папки отчётов', tabs.foldersTab, hint = 'Куда раскладываются скриншоты этой недели' },
-    { 'ОТЧЁТ', 'Отчёт за неделю', tabs.reportTab, hint = 'Онлайн, собеседования и сборка отчёта' },
-    { 'ГОС', 'Гос. волна и рация', tabs.govTab, hint = 'Слоты собеседований, кулдаун /gov и рация /d' },
-    { 'СОСТАВ', 'Состав организации', tabs.membersTab, hint = 'Кто сейчас в сети по данным /members' },
-    { 'БИНДЕР', 'Биндер', tabs.binderPanel, fixed = true, hint = 'Лекции и заготовки с задержкой между строками' },
-    { 'ЗАМЕТКИ', 'Заметки и правила', tabs.notesPanel, fixed = true, hint = 'Тексты с разметкой, поиском и тегами' },
-    { 'ЭКРАН', 'Виджеты на экране', tabs.screenTab, hint = 'Счётчик онлайна и виджет гос. волны' },
-    { 'ПРОЧЕЕ', 'Настройки', tabs.settingsTab, hint = 'Недели, автоскриншоты, оформление' },
-    { 'ТАЙМКИЛЛЕРЫ', 'Таймкиллеры', tabs.gamesPanel, fixed = true, hint = 'Скоротать время на посту' },
+    { 'Скриншоты', 'Папки скриншотов', tabs.foldersTab, group = 'ОТЧЁТНОСТЬ' },
+    { 'Отчёт', 'Отчёт за неделю', tabs.reportTab },
+    { 'Состав', 'Состав в сети', tabs.membersTab, group = 'ОРГАНИЗАЦИЯ' },
+    { 'Гос. волна', 'Гос. волна и рация', tabs.govTab },
+    { 'Биндер', 'Биндер', tabs.binderPanel, fixed = true, group = 'ИНСТРУМЕНТЫ' },
+    { 'Заметки', 'Заметки', tabs.notesPanel, fixed = true },
+    { 'Автоскриншоты', 'Настройки скриншотов', tabs.shotSettings, group = 'НАСТРОЙКИ' },
+    { 'Виджеты', 'Виджеты на экране', tabs.widgetsTab },
+    { 'Общие', 'Общие настройки', tabs.generalTab },
+    { 'Таймкиллеры', 'Таймкиллеры', tabs.gamesPanel, fixed = true, group = 'ОТДЫХ' },
 }
-
+for i, item in ipairs(NAV) do
+    item.section = item.group or NAV[i - 1].section
+end
 local function initials(nick)
     local first, second = nick:match('^(%a)[^_]*_?(%a?)')
     return ((first or '?') .. (second or '')):upper()
@@ -2752,16 +2767,23 @@ local function sidebar(width, height)
 
     if fonts.nav then imgui.PushFont(fonts.nav) end
     imgui.PushStyleVarVec2(imgui.StyleVar.ButtonTextAlign, imgui.ImVec2(0.12, 0.5))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 4))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 3))
     for i, item in ipairs(NAV) do
+        if item.group then
+            if i > 1 then gap(5) end
+            if fonts.bold then imgui.PushFont(fonts.bold) end
+            imgui.SetCursorPosX(left + 6)
+            dim(item.group)
+            if fonts.bold then imgui.PopFont() end
+        end
         local selected = menuTab == i
         local p = imgui.GetCursorScreenPos()
-        if button(selected and 'card' or 'nav', item[1] .. '##nav', width, 30) then
+        if button(selected and 'card' or 'nav', item[1] .. '##nav' .. i, width, 26) then
             menuTab = i
             if i == NOTES_TAB then refreshNotes() end
         end
         if selected then
-            draw:AddRectFilled(imgui.ImVec2(p.x, p.y + 8), imgui.ImVec2(p.x + 3, p.y + 22),
+            draw:AddRectFilled(imgui.ImVec2(p.x, p.y + 6), imgui.ImVec2(p.x + 3, p.y + 20),
                 imgui.GetColorU32Vec4(COLOR.accent), 2)
         end
     end
@@ -2800,6 +2822,7 @@ imgui.OnFrame(function() return menuWindow[0] end, function(self)
     imgui.SameLine(contentX)
     imgui.BeginGroup()
     local item = NAV[menuTab] or NAV[1]
+    label(item.section)
     if fonts.title then imgui.PushFont(fonts.title) end
     txt(item[2])
     if fonts.title then imgui.PopFont() end
@@ -3101,7 +3124,7 @@ function main()
     end
     sampRegisterChatCommand('tn', toggleNotes)
     sampRegisterChatCommand('tnotes', toggleNotes)
-    sampAddChatMessage(u8:decode('TimeShot {FFFFFF}by {FFD166}jalisco {808080}| {4FA3FF}/t {FFFFFF}- скриншот {808080}| {4FA3FF}/tmenu {FFFFFF}- меню'), 0x4FA3FF)
+    sampAddChatMessage(u8:decode('TimeShot {FFFFFF}by {FFD166}jalisco {808080}| {4FA3FF}/t {FFFFFF}- скриншот {808080}| {4FA3FF}/tmenu {FFFFFF}- меню {808080}| {4FA3FF}/td {FFFFFF}- чат департамента'), 0x4FA3FF)
 
     wait(3000)
     if deadlineDay() then remindDeadline() end
