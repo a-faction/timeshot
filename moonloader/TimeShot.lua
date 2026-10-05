@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.3')
+script_version('1.0.4')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -839,6 +839,10 @@ local update = {
     manual = false,
     latest = nil,
     notes = '',
+    status = 'ещё не проверялось',
+    waiting = false,
+    startedAt = 0,
+    checkedAt = 0,
 }
 
 function update.number(version)
@@ -852,6 +856,7 @@ end
 
 function update.download(url, path, stage)
     os.remove(path)
+    update.waiting, update.startedAt = true, os.clock()
     local status = require('moonloader').download_status
     downloadUrlToFile(url .. '?t=' .. os.time(), path, function(_, code)
         if code == status.STATUS_ENDDOWNLOADDATA then update.stage = stage end
@@ -860,6 +865,7 @@ end
 
 function update.check(manual)
     update.manual = manual
+    update.status = 'проверяю…'
     update.download(update.versionUrl, update.infoPath, 'info')
 end
 
@@ -904,25 +910,36 @@ end
 
 function update.process()
     local stage = update.stage
-    if not stage then return end
-    update.stage = nil
+    if not stage then
+        if update.waiting and os.clock() - update.startedAt > 20 then
+            update.waiting = false
+            update.status = 'не удалось связаться с GitHub'
+            if update.manual then notify('Не удалось проверить обновления: нет ответа от GitHub.') end
+        end
+        return
+    end
+    update.stage, update.waiting, update.checkedAt = nil, false, os.time()
 
     if stage == 'info' then
         local info = update.readInfo()
         if not info then
+            update.status = 'не удалось прочитать данные о версии'
             if update.manual then notify('Не удалось проверить обновления.') end
             return
         end
         update.latest = tostring(info.version)
         update.notes = type(info.notes) == 'string' and info.notes or ''
         if update.number(update.latest) <= update.number(update.current()) then
+            update.status = 'установлена последняя версия'
             if update.manual then notify('Установлена последняя версия — ' .. update.current() .. '.') end
             return
         end
         if cfg.autoUpdate or update.manual then
+            update.status = 'скачиваю версию ' .. update.latest
             notify('Найдена версия {4FA3FF}' .. update.latest .. '{FFFFFF}, скачиваю.')
             update.download(update.scriptUrl, update.filePath, 'file')
         else
+            update.status = 'доступна версия ' .. update.latest
             notify('Доступна версия {4FA3FF}' .. update.latest .. '{FFFFFF}. Обновить: /tupdate')
         end
         return
@@ -930,6 +947,7 @@ function update.process()
 
     local ok, version = update.install()
     if not ok then
+        update.status = 'файл обновления не прошёл проверку'
         return notify('Файл обновления не прошёл проверку, оставляю текущую версию.')
     end
     notify('Обновлено до версии {4FA3FF}' .. version .. '{FFFFFF}'
@@ -1349,8 +1367,6 @@ local function saveBind()
     end
     setBuffer(bs.command, command)
     saveConfig()
-    sampRegisterChatCommand('tavatar', function() takeAvatar(false) end)
-    sampRegisterChatCommand('tupdate', function() update.check(true) end)
     registerBinds()
     return true
 end
@@ -2010,8 +2026,12 @@ function tabs.generalTab(W)
         divider(w)
         imgui.AlignTextToFramePadding()
         txt('Установлена версия ' .. update.current())
-        alignRight(w, 170)
-        if button('card', 'Проверить сейчас', 170) then update.check(true) end
+        alignRight(w, 210)
+        if button('primary', 'Проверить обновление', 210) then update.check(true) end
+        local checked = update.checkedAt > 0 and ('  ·  ' .. os.date('%H:%M:%S', update.checkedAt)) or ''
+        local fresh = update.latest ~= nil and update.number(update.latest) > update.number(update.current())
+        colored(fresh and COLOR.good or COLOR.dim, 'Состояние: ' .. update.status .. checked)
+        if fresh and update.notes ~= '' then dim('Что нового: ' .. update.notes) end
     end)
 
     card(W, 'ЦВЕТ АКЦЕНТА', function(w)
@@ -3111,6 +3131,8 @@ function main()
     sampRegisterChatCommand('tstop', function()
         if binder.running then binder.stop = true else notify('Сейчас ни один бинд не запущен.') end
     end)
+    sampRegisterChatCommand('tavatar', function() takeAvatar(false) end)
+    sampRegisterChatCommand('tupdate', function() update.check(true) end)
     registerBinds()
     local function toggleNotes()
         if menuWindow[0] and menuTab == NOTES_TAB then
