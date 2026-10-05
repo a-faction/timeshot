@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.4')
+script_version('1.0.5')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -48,6 +48,10 @@ local PATTERN = {
     membersTitleAlt = cp('В сети всего'),
     nextPage = cp('Следующая страница'),
     you = cp('%(Вы%)'),
+    lmenuInterviews = cp('обеседован'),
+    lmenuAssign = cp('азначить'),
+    slotTaken = cp('уже кто-то назначил'),
+    serverError = cp('^%[Ошибка%]%s*(.+)$'),
 }
 
 local cfg = {
@@ -87,6 +91,7 @@ local cfg = {
     binds = {},
     snakeBest = 0,
     autoUpdate = true,
+    interviewPlace = '',
     accent = 1,
     online = {},
     onlineClean = {},
@@ -651,6 +656,91 @@ local function sendRadio(target, text)
     return true
 end
 
+local booking = { place = new.char[96](), slot = nil, step = 0, startedAt = 0, status = '', ok = false, input = '' }
+
+function booking.fail(reason)
+    booking.step, booking.ok = 0, false
+    booking.status = 'не получилось: ' .. reason
+    notify('Собеседование не назначено: ' .. reason .. '. Окно оставил открытым — можно закончить вручную.')
+    return nil
+end
+
+function booking.start()
+    local place = ffi.string(booking.place):gsub('^%s+', ''):gsub('%s+$', '')
+    if not booking.slot then return notify('Нет свободного слота на следующий час.') end
+    local length = #cp(place)
+    if length < 2 or length > 20 then
+        return notify('Место собеседования: от 2 до 20 символов, сейчас ' .. length .. '.')
+    end
+    if sampIsDialogActive() then return notify('Сначала закрой открытое окно.') end
+    if place ~= cfg.interviewPlace then
+        cfg.interviewPlace = place
+        saveConfig()
+    end
+    local t = os.date('*t', booking.slot)
+    booking.input = cp(('%02d,%02d,%s'):format(t.hour, t.min, place))
+    booking.step, booking.startedAt, booking.ok = 1, os.clock(), false
+    booking.status = 'открываю /lmenu…'
+    lua_thread.create(function() sampSendChat('/lmenu') end)
+end
+
+function booking.dialog(dialogId, style, text)
+    if booking.step == 0 then return nil end
+    if os.clock() - booking.startedAt > (booking.step == 4 and 2.5 or 8) then
+        booking.step = 0
+        return nil
+    end
+    local clean = text:gsub('{%x%x%x%x%x%x}', '')
+
+    if booking.step == 4 then
+        if style == 0 and not booking.ok then
+            local line = clean:match('[^\r\n]+') or ''
+            if line ~= '' then booking.status = 'ответ сервера: ' .. u8(line:sub(1, 110)) end
+        end
+        sampSendDialogResponse(dialogId, 0, 0, '')
+        booking.step = 0
+        return false
+    end
+
+    if style == 1 or style == 3 then
+        sampSendDialogResponse(dialogId, 1, 0, booking.input)
+        booking.step, booking.startedAt = 4, os.clock()
+        booking.status = 'отправил время и место, жду ответа…'
+        return false
+    end
+
+    local wanted = booking.step == 1 and PATTERN.lmenuInterviews or PATTERN.lmenuAssign
+    local number = 0
+    for line in clean:gmatch('[^\r\n]+') do
+        number = number + 1
+        local index = number - (style == 5 and 2 or 1)
+        if index >= 0 and line:find(wanted, 1, true) then
+            sampSendDialogResponse(dialogId, 1, index, line)
+            booking.step, booking.startedAt = booking.step + 1, os.clock()
+            return false
+        end
+    end
+    return booking.fail(booking.step == 1 and 'в /lmenu не нашёлся пункт «Собеседования»'
+        or 'не нашёлся пункт «Назначить собеседование»')
+end
+
+function booking.message(clean)
+    if booking.status == '' or os.clock() - booking.startedAt > 10 then return end
+    if clean:find(PATTERN.slotTaken, 1, true) then
+        booking.ok, booking.status = false, 'на это время уже кто-то назначил собеседование'
+        return
+    end
+    local problem = clean:match(PATTERN.serverError)
+    if problem and booking.step ~= 0 then
+        booking.ok, booking.status = false, 'ошибка: ' .. u8(problem:sub(1, 110))
+        return
+    end
+    local nick, hour, minute = clean:match(PATTERN.interview)
+    if nick and nick == myNick() then
+        booking.ok, booking.status = true, ('назначено на %s:%s'):format(hour, minute)
+    end
+end
+
 local function parseMemberLine(line)
     local color = line:match('^%s*{(%x%x%x%x%x%x)}')
     local you = line:find(PATTERN.you) ~= nil
@@ -681,6 +771,10 @@ local function requestMembers()
 end
 
 function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
+    if booking.step ~= 0 then
+        local handled = booking.dialog(dialogId, style, text)
+        if handled ~= nil then return handled end
+    end
     if not members.waiting or os.clock() - members.requestAt > 5 then return end
     local cleanTitle = title:gsub('{%x%x%x%x%x%x}', '')
     if not (cleanTitle:find(PATTERN.membersTitle) or cleanTitle:find(PATTERN.membersTitleAlt, 1, true)) then
@@ -746,6 +840,7 @@ function sampev.onServerMessage(color, text)
     end
 
     if os.clock() - timeSentAt < 2 and clean:find(PATTERN.flood, 1, true) then floodHit = true end
+    booking.message(clean)
 
     local nick, tag = clean:match(PATTERN.radio)
     if nick then nickTags[nick] = tag end
@@ -968,6 +1063,10 @@ local function tick()
     end
 
     update.process()
+    if booking.step ~= 0 and os.clock() - booking.startedAt > (booking.step == 4 and 2.5 or 8) then
+        if booking.step < 4 then booking.status = 'сервер не открыл /lmenu' end
+        booking.step = 0
+    end
 
     ticks = ticks + 1
     if ticks % 60 == 0 then
@@ -980,6 +1079,7 @@ local function tick()
     end
 
     if cfg.members and now - members.lastRequest >= cfg.membersInterval and not busy and not pending and not binder.running
+        and booking.step == 0
         and not sampIsDialogActive() and not sampIsChatInputActive() and not isPauseMenuActive() then
         requestMembers()
     end
@@ -1889,7 +1989,6 @@ function tabs.reportTab(W)
 end
 
 function tabs.govTab(W)
-    local half = (W - 8) / 2
 
     card(W, 'МОЙ ТЕГ В РАЦИИ', function(w)
         local picked = chips('own', ORG_TAGS, cfg.ownTag, w)
@@ -1899,20 +1998,84 @@ function tabs.govTab(W)
         end
     end)
 
-    card(W, 'СЛОТЫ СОБЕСЕДОВАНИЙ В /lmenu НА СЛЕДУЮЩИЙ ЧАС', function(w)
+    card(W, 'РАСПИСАНИЕ СОБЕСЕДОВАНИЙ', function(w)
         local me = myNick()
-        local freeShown = false
-        for i, slot in ipairs(upcomingSlots()) do
-            if i > 1 then divider(w) end
-            local owner = slotOwner(slot)
-            local left = os.date('%H:%M', slot) .. '   через ' .. math.ceil((slot - os.time()) / 60) .. ' мин'
-            if owner then
-                valueRow(w, left, owner == me and 'занято вами' or ('занято: ' .. owner), COLOR.danger)
-            else
-                valueRow(w, left, freeShown and 'свободно' or 'свободно — ближайший', freeShown and COLOR.dim or COLOR.good)
-                freeShown = true
+        local now, t = os.time(), os.date('*t')
+        local first = os.time({ year = t.year, month = t.month, day = t.day, hour = t.hour, min = 5, sec = 0 })
+        local bookable = first + 3600
+        local rows = {}
+        for i = 0, 11 do
+            local slot = first + i * 600
+            if slot > now then
+                local owner = slotOwner(slot)
+                local status, color
+                if owner then
+                    status, color = (owner == me and 'занято вами' or ('занято: ' .. owner)), COLOR.danger
+                elseif slot >= bookable then
+                    status, color = 'свободно', COLOR.good
+                else
+                    status, color = 'свободно, но занять уже нельзя', COLOR.dim
+                end
+                rows[#rows + 1] = {
+                    { os.date('%H:%M', slot), owner and COLOR.text or (slot >= bookable and COLOR.text or COLOR.dim) },
+                    { 'через ' .. math.ceil((slot - now) / 60) .. ' мин', COLOR.dim },
+                    { status, color },
+                }
             end
         end
+        tableView(w, {
+            { title = 'ВРЕМЯ', width = 0.18 },
+            { title = 'КОГДА', width = 0.24 },
+            { title = 'СТАТУС', width = 0.58 },
+        }, rows)
+        gap(2)
+        dim('Видны назначения, которые прошли в чате при тебе. Занять можно только слоты следующего часа.')
+    end)
+
+    card(W, 'НАЗНАЧИТЬ СОБЕСЕДОВАНИЕ В /lmenu', function(w)
+        local me = myNick()
+        local slots = upcomingSlots()
+        local valid = false
+        for _, slot in ipairs(slots) do
+            if slot == booking.slot and not slotOwner(slot) then valid = true end
+        end
+        if not valid then booking.slot = nearestFreeSlot() end
+
+        label('ВРЕМЯ — СЛОТЫ СЛЕДУЮЩЕГО ЧАСА')
+        local taken = {}
+        for i, slot in ipairs(slots) do
+            if i > 1 then imgui.SameLine(0, 6) end
+            local owner = slotOwner(slot)
+            local kind = owner and 'danger' or (slot == booking.slot and 'primary' or 'card')
+            if button(kind, os.date('%H:%M', slot) .. '##slot' .. i, (w - 30) / 6) and not owner then booking.slot = slot end
+            if owner then taken[#taken + 1] = os.date('%H:%M', slot) .. ' — ' .. (owner == me and 'вы' or owner) end
+        end
+        imgui.PushTextWrapPos(imgui.GetCursorPosX() + w)
+        dim(#taken > 0 and ('Занято: ' .. table.concat(taken, ',  ')) or 'Занятых слотов в чате при тебе не было.')
+        imgui.PopTextWrapPos()
+
+        gap()
+        label('МЕСТО')
+        imgui.PushItemWidth(w)
+        imgui.InputText('##booking_place', booking.place, ffi.sizeof(booking.place))
+        imgui.PopItemWidth()
+
+        local length = #cp((ffi.string(booking.place):gsub('^%s+', ''):gsub('%s+$', '')))
+        local fits = length >= 2 and length <= 20
+        if fits then
+            dim('Символов: ' .. length .. ' из 20')
+        else
+            colored(COLOR.danger, 'Сервер принимает место длиной от 2 до 20 символов, сейчас ' .. length .. '.')
+        end
+
+        gap()
+        local ready = booking.slot ~= nil and fits and booking.step == 0
+        local caption = booking.slot and ('Занять ' .. os.date('%H:%M', booking.slot)) or 'Свободных слотов нет'
+        if button(ready and 'primary' or 'card', caption .. '##book', w) and ready then booking.start() end
+        if booking.status ~= '' then
+            colored(booking.ok and COLOR.good or COLOR.dim, 'Состояние: ' .. booking.status)
+        end
+        dim('Скрипт сам пройдёт /lmenu → Собеседования → Назначить и введёт время и место.')
     end)
 
     card(W, 'ГОС. ВОЛНА /gov', function(w)
@@ -1932,9 +2095,6 @@ function tabs.govTab(W)
     dim('Слоты и волны видны только те, что прошли в чате при тебе.')
     gap(4)
 
-    if button('card', 'Занять волну в /d', half) then sendRadio('Всем', 'Занимаю государственную волну.') end
-    imgui.SameLine()
-    if button('card', 'Освободить волну в /d', half) then sendRadio('Всем', 'Освобождаю государственную волну.') end
     if button('primary', 'Открыть рацию /d', W) then radioWindow[0] = true end
 end
 
@@ -3109,6 +3269,7 @@ function main()
 
     math.randomseed(os.time())
     loadConfig()
+    ffi.copy(booking.place, cfg.interviewPlace:sub(1, 90))
     ensureDir(BASE_DIR)
     os.remove(TEMP_FILE)
     refreshStats()
