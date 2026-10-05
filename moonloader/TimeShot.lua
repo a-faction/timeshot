@@ -832,7 +832,7 @@ end
 
 local update = {
     versionUrl = 'https://raw.githubusercontent.com/a-faction/timeshot/main/version.json',
-    scriptUrl = 'https://raw.githubusercontent.com/a-faction/timeshot/main/TimeShot.lua',
+    scriptUrl = 'https://raw.githubusercontent.com/a-faction/timeshot/main/moonloader/TimeShot.lua',
     infoPath = getWorkingDirectory() .. '\\config\\TimeShot_version.json',
     filePath = getWorkingDirectory() .. '\\config\\TimeShot_update.lua',
     stage = nil,
