@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.0')
+script_version('1.0.1')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -2743,7 +2743,7 @@ local function sidebar(width, height)
 
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 3))
     centered(nick ~= '' and nick or 'TimeShot', fonts.strong)
-    centered(cfg.myRank ~= '' and cfg.myRank or 'должность неизвестна', fonts.bold, true)
+    centered(cfg.myRank ~= '' and cfg.myRank or 'должность уточняется', fonts.bold, true)
     centered(os.date('%d.%m.%Y  %H:%M:%S'), fonts.bold, true)
     imgui.PopStyleVar(1)
     gap(2)
@@ -3076,7 +3076,13 @@ function main()
     sampRegisterChatCommand('t', cmdShot)
     sampRegisterChatCommand('tmenu', function()
         menuWindow[0] = not menuWindow[0]
-        if menuWindow[0] then refreshStats() end
+        if menuWindow[0] then
+            refreshStats()
+            if cfg.myRank == '' and not members.asked then
+                members.asked = true
+                requestMembers()
+            end
+        end
     end)
     sampRegisterChatCommand('td', function() radioWindow[0] = not radioWindow[0] end)
     sampRegisterChatCommand('tstop', function()
