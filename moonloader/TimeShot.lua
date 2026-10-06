@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.7')
+script_version('1.0.8')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
