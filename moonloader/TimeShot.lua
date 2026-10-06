@@ -371,6 +371,7 @@ int __stdcall ClientToScreen(void* hWnd, TS_POINT* lpPoint);
 void* __stdcall MonitorFromWindow(void* hWnd, unsigned long dwFlags);
 int __stdcall GetMonitorInfoA(void* hMonitor, TS_MONITORINFO* lpmi);
 void* __stdcall GetForegroundWindow(void);
+short __stdcall GetKeyState(int key);
 unsigned int __stdcall SetTimer(void* hWnd, unsigned int id, unsigned int ms, void* proc);
 int __stdcall KillTimer(void* hWnd, unsigned int id);
 int __stdcall FlashWindow(void* hWnd, int invert);
@@ -1649,27 +1650,41 @@ local function deleteBind()
     newBind()
 end
 
-local wheel = { open = new.bool(false), target = nil, items = {}, prompt = nil, rank = new.int(1), reason = new.char[64]() }
+local wheel = { open = new.bool(false), target = nil, targets = {}, index = 1, items = {}, prompt = nil, rank = new.int(1),
+    reason = new.char[64]() }
 
-function wheel.findTarget()
+function wheel.findTargets()
+    local list, seen = {}, {}
     local aimed, ped = getCharPlayerIsTargeting(PLAYER_HANDLE)
     if aimed and ped then
         local found, id = sampGetPlayerIdByCharHandle(ped)
-        if found then return id end
+        if found then
+            list[1] = { id = id, nick = sampGetPlayerNickname(id), distance = -1 }
+            seen[id] = true
+        end
     end
     local mx, my, mz = getCharCoordinates(PLAYER_PED)
-    local best, bestDistance
     for _, other in ipairs(getAllChars()) do
         if other ~= PLAYER_PED then
             local found, id = sampGetPlayerIdByCharHandle(other)
-            if found then
+            if found and not seen[id] then
                 local x, y, z = getCharCoordinates(other)
                 local distance = getDistanceBetweenCoords3d(mx, my, mz, x, y, z)
-                if distance <= 6 and (not bestDistance or distance < bestDistance) then best, bestDistance = id, distance end
+                if distance <= 6 then
+                    seen[id] = true
+                    list[#list + 1] = { id = id, nick = sampGetPlayerNickname(id), distance = distance }
+                end
             end
         end
     end
-    return best
+    table.sort(list, function(a, b) return a.distance < b.distance end)
+    return list
+end
+
+function wheel.cycle(step)
+    if #wheel.targets < 2 then return end
+    wheel.index = (wheel.index - 1 + step) % #wheel.targets + 1
+    wheel.target = wheel.targets[wheel.index]
 end
 
 function wheel.show()
@@ -1682,10 +1697,10 @@ function wheel.show()
         if type(bind) == 'table' and bind.wheel == true and #items < 8 then items[#items + 1] = bind end
     end
     if #items == 0 then return notify('В круговом меню пусто: отметь нужные бинды галочкой «В круговом меню».') end
-    local id = wheel.findTarget()
-    if not id then return notify('Круговое меню: рядом нет игрока — подойди ближе или наведи на него прицел.') end
+    local targets = wheel.findTargets()
+    if #targets == 0 then return notify('Круговое меню: рядом нет игрока — подойди ближе или наведи на него прицел.') end
     wheel.items, wheel.prompt = items, nil
-    wheel.target = { id = id, nick = sampGetPlayerNickname(id) }
+    wheel.targets, wheel.index, wheel.target = targets, 1, targets[1]
     wheel.open[0] = true
 end
 
@@ -1712,6 +1727,7 @@ end
 
 local hotkeys = {
     capture = nil,
+    seen = {},
     skipEscape = false,
     names = {
         [0x09] = 'Tab', [0x0D] = 'Enter', [0x20] = 'Пробел', [0x21] = 'PgUp', [0x22] = 'PgDn', [0x23] = 'End',
@@ -1744,8 +1760,9 @@ function hotkeys.name(code)
         .. (math.floor(flags / 4) % 2 == 1 and 'Shift+' or '') .. name
 end
 
-function hotkeys.code(key)
-    return key + (isKeyDown(0x11) and 0x100 or 0) + (isKeyDown(0x12) and 0x200 or 0) + (isKeyDown(0x10) and 0x400 or 0)
+function hotkeys.code(key, system)
+    local function held(modifier) return ffi.C.GetKeyState(modifier) < 0 end
+    return key + (held(0x11) and 0x100 or 0) + ((system or held(0x12)) and 0x200 or 0) + (held(0x10) and 0x400 or 0)
 end
 
 function hotkeys.assign(code)
@@ -1776,7 +1793,17 @@ function hotkeys.fire(code)
 end
 
 function hotkeys.message(msg, key, lparam)
-    if msg ~= 0x100 and msg ~= 0x104 then return false end
+    local pressed = msg == 0x100 or msg == 0x104
+    local released = msg == 0x101 or msg == 0x105
+    if not pressed and not released then return false end
+    if released then
+        local handled = hotkeys.seen[key]
+        hotkeys.seen[key] = nil
+        if handled then return false end
+    else
+        hotkeys.seen[key] = true
+    end
+    local alt = (msg == 0x104 or msg == 0x105) and bit.band(tonumber(lparam) or 0, 0x20000000) ~= 0
     if hotkeys.capture then
         if key == 0x10 or key == 0x11 or key == 0x12 or key == 0x5B or key == 0x5C or (key >= 0xA0 and key <= 0xA5) then
             return true
@@ -1786,18 +1813,18 @@ function hotkeys.message(msg, key, lparam)
         elseif key == 0x08 or key == 0x2E then
             hotkeys.assign(0)
         else
-            hotkeys.assign(hotkeys.code(key))
+            hotkeys.assign(hotkeys.code(key, alt))
         end
         return true
     end
-    if bit.band(tonumber(lparam) or 0, 0x40000000) ~= 0 then return false end
+    if pressed and bit.band(tonumber(lparam) or 0, 0x40000000) ~= 0 then return false end
     if isPauseMenuActive() or sampIsChatInputActive() or sampIsDialogActive() then return false end
-    if radioWindow[0] and cfg.keys.radio ~= 0 and hotkeys.code(key) == cfg.keys.radio then
+    if radioWindow[0] and cfg.keys.radio ~= 0 and hotkeys.code(key, alt) == cfg.keys.radio then
         radioWindow[0] = false
         return false
     end
     if pickWindow[0] or radioWindow[0] or (menuWindow[0] and inputActive) or wheel.prompt then return false end
-    local code = hotkeys.code(key)
+    local code = hotkeys.code(key, alt)
     hotkeys.fire(code)
     if code == cfg.keys.menu then consumeWindowMessage(true, false) end
     return false
@@ -3561,11 +3588,34 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
     local idText = 'ID ' .. wheel.target.id
     local idSize = imgui.CalcTextSize(idText)
     draw:AddText(imgui.ImVec2(cx - idSize.x / 2, cy + 2), imgui.GetColorU32Vec4(COLOR.dim), idText)
-    local hint = 'ЛКМ — выбрать     ПКМ или Esc — закрыть'
+    local many = #wheel.targets > 1
+    if many then
+        local counter = wheel.index .. ' из ' .. #wheel.targets
+        local counterSize = imgui.CalcTextSize(counter)
+        draw:AddText(imgui.ImVec2(cx - counterSize.x / 2, cy + 22), imgui.GetColorU32Vec4(COLOR.accent), counter)
+    end
+    local hint = many and 'ЛКМ — выбрать     колёсико или клик по центру — другой игрок     ПКМ или Esc — закрыть'
+        or 'ЛКМ — выбрать     ПКМ или Esc — закрыть'
     local hintSize = imgui.CalcTextSize(hint)
     draw:AddText(imgui.ImVec2(cx - hintSize.x / 2, cy + outer + 26), imgui.GetColorU32Vec4(COLOR.text), hint)
 
-    if hovered and imgui.IsMouseClicked(0) then
+    local found, ped = sampGetCharHandleBySampPlayerId(wheel.target.id)
+    if found and doesCharExist(ped) and isCharOnScreen(ped) then
+        local x, y, z = getCharCoordinates(ped)
+        local px, py = convert3DCoordsToScreen(x, y, z + 1.1)
+        local marker = imgui.GetColorU32Vec4(COLOR.accent)
+        draw:AddTriangleFilled(imgui.ImVec2(px - 10, py - 22), imgui.ImVec2(px + 10, py - 22), imgui.ImVec2(px, py - 6), marker)
+        local tag = who .. ' [' .. wheel.target.id .. ']'
+        local tagSize = imgui.CalcTextSize(tag)
+        draw:AddText(imgui.ImVec2(px - tagSize.x / 2, py - 26 - tagSize.y), marker, tag)
+    end
+
+    local scroll = imgui.GetIO().MouseWheel
+    if scroll ~= 0 then
+        wheel.cycle(scroll > 0 and -1 or 1)
+    elseif imgui.IsMouseClicked(0) and distance < inner then
+        wheel.cycle(1)
+    elseif hovered and imgui.IsMouseClicked(0) then
         wheel.choose(wheel.items[hovered])
     elseif imgui.IsMouseClicked(1) then
         wheel.open[0] = false
