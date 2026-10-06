@@ -1852,7 +1852,8 @@ function wheel.choose(bind)
     end
 end
 
-local sens = { unit = 0.00001, memory = nil, startX = nil, startY = nil }
+local sens = { unit = 0.00001, memory = nil, startX = nil, startY = nil, changed = {},
+    sites = { 0x50F048, 0x50FB28, 0x510C28, 0x511E0A, 0x52228E } }
 
 function sens.read()
     if not sens.memory then sens.memory = ffi.cast('float*', 0xB6EC18) end
@@ -1866,13 +1867,27 @@ function sens.capture()
     if cfg.sensY <= 0 then cfg.sensY = math.max(5, math.min(1000, math.floor(y / sens.unit + 0.5))) end
 end
 
+function sens.split()
+    if sens.splitDone then return end
+    sens.splitDone = true
+    for _, address in ipairs(sens.sites) do
+        if readMemory(address - 2, 2, true) == 0x0DD8 and readMemory(address, 4, true) == 0xB6EC1C then
+            writeMemory(address, 4, 0xB6EC18, true)
+            sens.changed[#sens.changed + 1] = address
+        end
+    end
+end
+
 function sens.apply()
     if not cfg.sens or not sens.startX then return end
+    sens.split()
     sens.memory[1] = cfg.sensX * sens.unit
     sens.memory[0] = cfg.sensY * sens.unit
 end
 
 function sens.restore()
+    for _, address in ipairs(sens.changed) do writeMemory(address, 4, 0xB6EC1C, true) end
+    sens.changed, sens.splitDone = {}, false
     if sens.startX then sens.memory[1], sens.memory[0] = sens.startX, sens.startY end
 end
 
