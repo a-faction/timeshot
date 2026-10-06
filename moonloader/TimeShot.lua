@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.12')
+script_version('1.0.13')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -4003,7 +4003,8 @@ roster.HideCursor = true
 imgui.OnFrame(function() return radioWindow[0] end, function()
     local W = 480
     local from = cfg.ownTag ~= '' and ('От: [' .. cfg.ownTag .. ']') or 'Свой тег не выбран: /tmenu, вкладка «Гос»'
-    beginWindow('##timeshot_radio', W, 'РАЦИЯ /d', from, radioWindow)
+    beginWindow('##timeshot_radio', W, 'РАЦИЯ /d', from, radioWindow, 540)
+    local appearing = imgui.IsWindowAppearing()
 
     card(W, 'КОМУ', function(w)
         local picked = chips('to', RADIO_TAGS, radioTarget, w)
@@ -4013,7 +4014,9 @@ imgui.OnFrame(function() return radioWindow[0] end, function()
     local entered, message
     card(W, 'СООБЩЕНИЕ', function(w)
         imgui.PushItemWidth(w)
-        entered = imgui.InputText('##radio', radioText, ffi.sizeof(radioText), imgui.InputTextFlags.EnterReturnsTrue)
+        if appearing then imgui.SetKeyboardFocusHere() end
+        imgui.InputText('##radio', radioText, ffi.sizeof(radioText))
+        entered = imgui.IsItemDeactivated() and imgui.IsKeyPressed(imgui.GetKeyIndex(imgui.Key.Enter))
         imgui.PopItemWidth()
         message = ffi.string(radioText)
         dim(('/d [%s] - [%s]: %s'):format(cfg.ownTag ~= '' and cfg.ownTag or '?', radioTarget, message))
