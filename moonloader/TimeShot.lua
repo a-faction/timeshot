@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.6')
+script_version('1.0.7')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -109,6 +109,11 @@ local cfg = {
     snakeBest = 0,
     autoUpdate = true,
     interviewPlace = '',
+    interviewRemind = true,
+    termStart = '',
+    termDays = 30,
+    termExtra = 0,
+    keys = { shot = 0, menu = 0 },
     accent = 1,
     online = {},
     onlineClean = {},
@@ -189,6 +194,7 @@ local function loadConfig()
         end
     end
     cfg.delay = math.floor(cfg.delay)
+    cfg.keys.shot, cfg.keys.menu = tonumber(cfg.keys.shot) or 0, tonumber(cfg.keys.menu) or 0
     if cfg.weekStart ~= 0 then cfg.weekStart = 1 end
 
     local cutoff = os.date('%Y-%m-%d', os.time() - 30 * 86400)
@@ -942,6 +948,41 @@ local function remindDeadline()
     notify(summary)
 end
 
+local term = { input = new.char[16]() }
+
+function term.start()
+    local day, month, year = cfg.termStart:match('^%s*(%d+)%.(%d+)%.(%d+)%s*$')
+    if not day then return nil end
+    day, month, year = tonumber(day), tonumber(month), tonumber(year)
+    if year < 100 then year = year + 2000 end
+    if month < 1 or month > 12 or day < 1 or day > 31 or year < 2020 or year > 2100 then return nil end
+    return os.time({ year = year, month = month, day = day, hour = 12 })
+end
+
+function term.info()
+    local start = term.start()
+    if not start then return nil end
+    local now = os.date('*t')
+    local today = os.time({ year = now.year, month = now.month, day = now.day, hour = 12 })
+    local passed = math.floor((today - start) / 86400 + 0.5)
+    local total = cfg.termDays + cfg.termExtra
+    return {
+        start = start,
+        passed = passed,
+        day = passed + 1,
+        total = total,
+        left = total - passed,
+        finish = start + total * 86400,
+    }
+end
+
+function term.remind()
+    local info = term.info()
+    if not info or info.left > 5 or info.left < 0 then return end
+    notify(('До конца срока на посту {FF6E6E}%d дн.{FFFFFF} (до %s). Запрос на продление подаётся не позднее %s.'):format(
+        info.left, os.date('%d.%m', info.finish), os.date('%d.%m', info.finish - 3 * 86400)))
+end
+
 local update = {
     versionUrl = 'https://raw.githubusercontent.com/a-faction/timeshot/main/version.json',
     scriptUrl = 'https://raw.githubusercontent.com/a-faction/timeshot/main/moonloader/TimeShot.lua',
@@ -1083,6 +1124,29 @@ local function tick()
     if booking.step ~= 0 and os.clock() - booking.startedAt > (booking.step == 4 and 2.5 or 8) then
         if booking.step < 4 then booking.status = 'сервер не открыл /lmenu' end
         booking.step = 0
+    end
+
+    if cfg.interviewRemind then
+        local me = myNick()
+        for _, entry in ipairs(cfg.slots) do
+            if type(entry) == 'table' and entry.nick == me and type(entry.t) == 'number' then
+                local left = entry.t - now
+                local text
+                if left <= 300 and left > 0 and not entry.soon then
+                    entry.soon = true
+                    text = ('Через %d мин твоё собеседование — в {4FA3FF}%s{FFFFFF}.'):format(
+                        math.ceil(left / 60), os.date('%H:%M', entry.t))
+                elseif left <= 0 and left > -180 and not entry.started then
+                    entry.started = true
+                    text = 'Собеседование началось. Сделай скриншот с /time: {4FA3FF}/t{FFFFFF}, папка «Собеседование».'
+                end
+                if text then
+                    stateDirty = true
+                    notify(text)
+                    pcall(function() ffi.load('winmm').PlaySoundA('SystemAsterisk', nil, 0x10001) end)
+                end
+            end
+        end
     end
 
     ticks = ticks + 1
@@ -1444,6 +1508,7 @@ local function selectBind(index)
     setBuffer(bs.command, bind.cmd or '')
     setBuffer(bs.text, bind.text or '')
     bs.delay[0] = tonumber(bind.delay) or 2500
+    bs.key = tonumber(bind.key) or 0
 end
 
 local function newBind()
@@ -1452,6 +1517,7 @@ local function newBind()
     setBuffer(bs.command, '')
     setBuffer(bs.text, '')
     bs.delay[0] = 2500
+    bs.key = 0
 end
 
 local function saveBind()
@@ -1475,7 +1541,7 @@ local function saveBind()
             return false
         end
     end
-    local bind = { name = name, cmd = command, delay = bs.delay[0], text = ffi.string(bs.text) }
+    local bind = { name = name, cmd = command, delay = bs.delay[0], text = ffi.string(bs.text), key = bs.key or 0 }
     if bs.index then
         cfg.binds[bs.index] = bind
     else
@@ -1496,6 +1562,92 @@ local function deleteBind()
     end
     newBind()
 end
+
+local hotkeys = {
+    capture = nil,
+    skipEscape = false,
+    names = {
+        [0x09] = 'Tab', [0x0D] = 'Enter', [0x20] = 'Пробел', [0x21] = 'PgUp', [0x22] = 'PgDn', [0x23] = 'End',
+        [0x24] = 'Home', [0x25] = 'Влево', [0x26] = 'Вверх', [0x27] = 'Вправо', [0x28] = 'Вниз', [0x2D] = 'Insert',
+        [0x6A] = 'Num*', [0x6B] = 'Num+', [0x6D] = 'Num-', [0x6E] = 'Num.', [0x6F] = 'Num/',
+        [0xBA] = ';', [0xBB] = '=', [0xBC] = ',', [0xBD] = '-', [0xBE] = '.', [0xBF] = '/', [0xC0] = '`',
+        [0xDB] = '[', [0xDC] = '\\', [0xDD] = ']', [0xDE] = "'",
+        [0x01] = 'ЛКМ', [0x02] = 'ПКМ', [0x04] = 'СКМ', [0x05] = 'Мышь 4', [0x06] = 'Мышь 5',
+    },
+}
+
+function hotkeys.name(code)
+    code = tonumber(code) or 0
+    if code == 0 then return 'не задана' end
+    local key = code % 0x100
+    local name = hotkeys.names[key]
+    if not name then
+        if (key >= 0x30 and key <= 0x39) or (key >= 0x41 and key <= 0x5A) then
+            name = string.char(key)
+        elseif key >= 0x70 and key <= 0x87 then
+            name = 'F' .. (key - 0x6F)
+        elseif key >= 0x60 and key <= 0x69 then
+            name = 'Num' .. (key - 0x60)
+        else
+            name = 'клавиша ' .. key
+        end
+    end
+    local flags = math.floor(code / 0x100)
+    return (flags % 2 == 1 and 'Ctrl+' or '') .. (math.floor(flags / 2) % 2 == 1 and 'Alt+' or '')
+        .. (math.floor(flags / 4) % 2 == 1 and 'Shift+' or '') .. name
+end
+
+function hotkeys.code(key)
+    return key + (isKeyDown(0x11) and 0x100 or 0) + (isKeyDown(0x12) and 0x200 or 0) + (isKeyDown(0x10) and 0x400 or 0)
+end
+
+function hotkeys.assign(code)
+    local target = hotkeys.capture
+    hotkeys.capture = nil
+    if target == 'bind' then
+        bs.key = code
+    elseif target then
+        cfg.keys[target] = code
+        saveConfig()
+    end
+end
+
+function hotkeys.fire(code)
+    if code == cfg.keys.menu then
+        menuWindow[0] = not menuWindow[0]
+        if menuWindow[0] then refreshStats() end
+    end
+    if code == cfg.keys.shot then cmdShot() end
+    for _, bind in ipairs(cfg.binds) do
+        if type(bind) == 'table' and tonumber(bind.key) == code then
+            runBind(bind)
+            break
+        end
+    end
+end
+
+function hotkeys.message(msg, key, lparam)
+    if msg ~= 0x100 and msg ~= 0x104 then return false end
+    if hotkeys.capture then
+        if key == 0x10 or key == 0x11 or key == 0x12 or key == 0x5B or key == 0x5C or (key >= 0xA0 and key <= 0xA5) then
+            return true
+        end
+        if key == 0x1B then
+            hotkeys.capture, hotkeys.skipEscape = nil, true
+        elseif key == 0x08 or key == 0x2E then
+            hotkeys.assign(0)
+        else
+            hotkeys.assign(hotkeys.code(key))
+        end
+        return true
+    end
+    if bit.band(tonumber(lparam) or 0, 0x40000000) ~= 0 then return false end
+    if isPauseMenuActive() or sampIsChatInputActive() or sampIsDialogActive() then return false end
+    if pickWindow[0] or radioWindow[0] or (menuWindow[0] and inputActive) then return false end
+    hotkeys.fire(hotkeys.code(key))
+    return false
+end
+
 
 local function centerNextWindow()
     local sx, sy = getScreenResolution()
@@ -1765,6 +1917,12 @@ local function toggle(text, key)
     end
 end
 
+function hotkeys.button(target, code, width)
+    local capturing = hotkeys.capture == target
+    if button(capturing and 'primary' or 'card', (capturing and 'нажми клавишу…' or hotkeys.name(code)) .. '##key_' .. target, width) then
+        hotkeys.capture = (not capturing) and target or nil
+    end
+end
 local function slider(key, min, max, format, width)
     sliders[key] = sliders[key] or new.int(cfg[key])
     sliders[key][0] = cfg[key]
@@ -1930,6 +2088,52 @@ function tabs.reportTab(W)
     local dates = weekDates()
     local half = (W - 8) / 2
 
+    card(W, 'СРОК НА ПОСТУ', function(w)
+        imgui.AlignTextToFramePadding()
+        txt('Дата назначения')
+        imgui.SameLine(CARD_PAD + 130)
+        imgui.PushItemWidth(120)
+        if imgui.InputText('##term_start', term.input, ffi.sizeof(term.input)) then
+            cfg.termStart = ffi.string(term.input)
+            cfgDirty = true
+        end
+        imgui.PopItemWidth()
+        imgui.SameLine()
+        if button('card', 'Сегодня', 90) then
+            cfg.termStart = os.date('%d.%m.%Y')
+            ffi.fill(term.input, ffi.sizeof(term.input))
+            ffi.copy(term.input, cfg.termStart)
+            saveConfig()
+        end
+        for _, days in ipairs({ 15, 30, 60 }) do
+            imgui.SameLine()
+            if button(cfg.termDays == days and 'primary' or 'card', days .. ' дн.##term' .. days, 70) then
+                cfg.termDays = days
+                saveConfig()
+            end
+        end
+        slider('termExtra', 0, 10, 'дни неактива, которые прибавляются к сроку: %d', w)
+
+        local info = term.info()
+        if not info then
+            dim('Укажи дату в формате ДД.ММ.ГГГГ — и здесь появится счётчик срока.')
+            return
+        end
+        imgui.ProgressBar(math.max(0, math.min(info.passed / info.total, 1)), imgui.ImVec2(w, 8), '')
+        valueRow(w, 'Идёт день', math.max(info.day, 0) .. ' из ' .. info.total)
+        divider(w)
+        valueRow(w, 'Осталось', info.left >= 0 and (info.left .. ' дн.') or 'срок истёк',
+            info.left <= 5 and COLOR.danger or COLOR.text)
+        divider(w)
+        valueRow(w, 'Конец срока', os.date('%d.%m.%Y', info.finish), COLOR.dim)
+        divider(w)
+        valueRow(w, 'Запрос на продление — не позднее', os.date('%d.%m.%Y', info.finish - 3 * 86400),
+            info.left <= 5 and COLOR.danger or COLOR.dim)
+        divider(w)
+        valueRow(w, 'Минимум 15 дней на посту', info.passed >= 15 and 'пройдено'
+            or ('будет ' .. os.date('%d.%m.%Y', info.start + 15 * 86400)), info.passed >= 15 and COLOR.good or COLOR.dim)
+    end)
+
     card(W, 'НЕДЕЛЯ', function(w)
         valueRow(w, weekFolder(), 'сдать до 23:59 ' .. dates[7]:sub(9, 10) .. '.' .. dates[7]:sub(6, 7),
             deadlineDay() and COLOR.danger or COLOR.dim)
@@ -2093,6 +2297,8 @@ function tabs.govTab(W)
             colored(booking.ok and COLOR.good or COLOR.dim, 'Состояние: ' .. booking.status)
         end
         dim('Скрипт сам пройдёт /lmenu → Собеседования → Назначить и введёт время и место.')
+        divider(w)
+        toggle('Напоминать о моём собеседовании за 5 минут и в момент начала', 'interviewRemind')
     end)
 
     card(W, 'ГОС. ВОЛНА /gov', function(w)
@@ -2209,6 +2415,20 @@ function tabs.generalTab(W)
         local fresh = update.latest ~= nil and update.number(update.latest) > update.number(update.current())
         colored(fresh and COLOR.good or COLOR.dim, 'Состояние: ' .. update.status .. checked)
         if fresh and update.notes ~= '' then dim('Что нового: ' .. update.notes) end
+    end)
+
+    card(W, 'ГОРЯЧИЕ КЛАВИШИ', function(w)
+        imgui.AlignTextToFramePadding()
+        txt('Скриншот с /time, как команда /t')
+        alignRight(w, 190)
+        hotkeys.button('shot', cfg.keys.shot, 190)
+        divider(w)
+        imgui.AlignTextToFramePadding()
+        txt('Открыть и закрыть это меню')
+        alignRight(w, 190)
+        hotkeys.button('menu', cfg.keys.menu, 190)
+        dim('Нажми кнопку, затем клавишу — можно с Ctrl, Alt или Shift. Esc — отмена, Backspace — убрать.')
+        dim('Клавиши для биндов задаются в разделе «Биндер». В чате и окнах клавиши не срабатывают.')
     end)
 
     card(W, 'ЦВЕТ АКЦЕНТА', function(w)
@@ -2571,6 +2791,7 @@ function tabs.binderPanel(W)
     imgui.PushStyleVarVec2(imgui.StyleVar.ButtonTextAlign, imgui.ImVec2(0.06, 0.5))
     for i, bind in ipairs(cfg.binds) do
         local title = tostring(bind.name) .. (bind.cmd ~= '' and ('   /' .. bind.cmd) or '')
+            .. ((tonumber(bind.key) or 0) ~= 0 and ('   [' .. hotkeys.name(bind.key) .. ']') or '')
         if button(i == bs.index and 'primary' or 'card', title .. '##bind' .. i, LIST - 30) then selectBind(i) end
     end
     imgui.PopStyleVar(1)
@@ -2587,13 +2808,15 @@ function tabs.binderPanel(W)
     end
 
     label('НАЗВАНИЕ')
-    imgui.SameLine(w - 170)
-    label('КОМАНДА ЗАПУСКА')
-    imgui.PushItemWidth(w - 182)
+    imgui.SameLine(w - 300)
+    label('КОМАНДА')
+    imgui.SameLine(w - 150)
+    label('КЛАВИША')
+    imgui.PushItemWidth(w - 312)
     imgui.InputText('##bind_name', bs.name, ffi.sizeof(bs.name))
     imgui.PopItemWidth()
-    imgui.SameLine(w - 170)
-    imgui.PushItemWidth(170)
+    imgui.SameLine(w - 300)
+    imgui.PushItemWidth(142)
     imgui.InputText('##bind_command', bs.command, ffi.sizeof(bs.command))
     imgui.PopItemWidth()
     if bs.command[0] == 0 and not imgui.IsItemActive() then
@@ -2601,6 +2824,8 @@ function tabs.binderPanel(W)
         imgui.GetWindowDrawList():AddText(imgui.ImVec2(corner.x + 10, corner.y + 6),
             imgui.GetColorU32Vec4(COLOR.dim), 'например: lek1')
     end
+    imgui.SameLine(w - 150)
+    hotkeys.button('bind', bs.key or 0, 150)
 
     label('ЗАДЕРЖКА МЕЖДУ СТРОКАМИ')
     imgui.PushItemWidth(w)
@@ -2956,6 +3181,10 @@ local function sidebar(width, height)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 3))
     centered(nick ~= '' and nick or 'TimeShot', fonts.strong)
     centered(cfg.myRank ~= '' and cfg.myRank or 'должность уточняется', fonts.bold, true)
+    local termInfo = term.info()
+    if termInfo and termInfo.left >= 0 then
+        centered('срок: день ' .. termInfo.day .. ' из ' .. termInfo.total, fonts.bold, true)
+    end
     centered(os.date('%d.%m.%Y  %H:%M:%S'), fonts.bold, true)
     imgui.PopStyleVar(1)
     gap(2)
@@ -3239,7 +3468,16 @@ end, function()
 end)
 widget.HideCursor = true
 
-function onWindowMessage(msg, wparam)
+function onWindowMessage(msg, wparam, lparam)
+    if hotkeys.message(msg, wparam, lparam) then
+        consumeWindowMessage(true, true)
+        return
+    end
+    if hotkeys.skipEscape and wparam == 0x1B and msg == 0x101 then
+        hotkeys.skipEscape = false
+        consumeWindowMessage(true, true)
+        return
+    end
     if (msg == 0x100 or msg == 0x101) and menuWindow[0] and menuTab == games.tab and not pickWindow[0] and not radioWindow[0] then
         local known = games.keys[wparam] or wparam == 0x20 or wparam == 0x0D
         if known and games.mode == 'snake' then
@@ -3287,6 +3525,7 @@ function main()
     math.randomseed(os.time())
     loadConfig()
     ffi.copy(booking.place, cfg.interviewPlace:sub(1, 90))
+    ffi.copy(term.input, cfg.termStart:sub(1, 15))
     ensureDir(BASE_DIR)
     os.remove(TEMP_FILE)
     refreshStats()
@@ -3331,6 +3570,7 @@ function main()
         notify('Папка в «Документах» недоступна, скриншоты и заметки сохраняю в {4FA3FF}moonloader\\TimeShot')
     end
     if deadlineDay() then remindDeadline() end
+    term.remind()
     update.check(false)
 
     while true do
