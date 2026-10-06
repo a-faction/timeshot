@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.8')
+script_version('1.0.9')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -115,6 +115,9 @@ local cfg = {
     termExtra = 0,
     keys = { shot = 0, menu = 0, wheel = 0, radio = 0 },
     radioKeySeeded = false,
+    sens = false,
+    sensX = 0,
+    sensY = 0,
     wheelSeeded = false,
     wheelKeySeeded = false,
     menuKeySeeded = false,
@@ -1725,6 +1728,30 @@ function wheel.choose(bind)
     end
 end
 
+local sens = { unit = 0.00001, memory = nil, startX = nil, startY = nil }
+
+function sens.read()
+    if not sens.memory then sens.memory = ffi.cast('float*', 0xB6EC18) end
+    return sens.memory[1], sens.memory[0]
+end
+
+function sens.capture()
+    local x, y = sens.read()
+    sens.startX, sens.startY = x, y
+    if cfg.sensX <= 0 then cfg.sensX = math.max(5, math.min(1000, math.floor(x / sens.unit + 0.5))) end
+    if cfg.sensY <= 0 then cfg.sensY = math.max(5, math.min(1000, math.floor(y / sens.unit + 0.5))) end
+end
+
+function sens.apply()
+    if not cfg.sens or not sens.startX then return end
+    sens.memory[1] = cfg.sensX * sens.unit
+    sens.memory[0] = cfg.sensY * sens.unit
+end
+
+function sens.restore()
+    if sens.startX then sens.memory[1], sens.memory[0] = sens.startX, sens.startY end
+end
+
 local hotkeys = {
     capture = nil,
     seen = {},
@@ -2597,6 +2624,31 @@ function tabs.generalTab(W)
         local fresh = update.latest ~= nil and update.number(update.latest) > update.number(update.current())
         colored(fresh and COLOR.good or COLOR.dim, 'Состояние: ' .. update.status .. checked)
         if fresh and update.notes ~= '' then dim('Что нового: ' .. update.notes) end
+    end)
+
+    card(W, 'ЧУВСТВИТЕЛЬНОСТЬ МЫШИ', function(w)
+        local before = cfg.sens
+        toggle('Задавать чувствительность отдельно по горизонтали и вертикали', 'sens')
+        if before and not cfg.sens then sens.restore() end
+        if cfg.sens then
+            local side = (w - 8) / 2
+            slider('sensX', 5, 1000, 'по горизонтали: %d', side)
+            imgui.SameLine()
+            slider('sensY', 5, 1000, 'по вертикали: %d', side)
+            if button('card', 'Сделать вертикаль как горизонталь', side) then
+                cfg.sensY = cfg.sensX
+                saveConfig()
+            end
+            imgui.SameLine()
+            if button('card', 'Вернуть значения игры', side) and sens.startX then
+                cfg.sensX = math.max(5, math.min(1000, math.floor(sens.startX / sens.unit + 0.5)))
+                cfg.sensY = math.max(5, math.min(1000, math.floor(sens.startY / sens.unit + 0.5)))
+                saveConfig()
+            end
+        end
+        local x, y = sens.read()
+        dim(('Сейчас в игре: горизонталь %d, вертикаль %d. Чем больше число, тем быстрее камера.'):format(
+            math.floor(x / sens.unit + 0.5), math.floor(y / sens.unit + 0.5)))
     end)
 
     card(W, 'ГОРЯЧИЕ КЛАВИШИ', function(w)
@@ -3868,6 +3920,7 @@ end
 function onScriptTerminate(script)
     if script == thisScript() then
         if gameWindow then ffi.C.KillTimer(gameWindow, AFK_TIMER) end
+        if cfg.sens then pcall(sens.restore) end
         saveConfig()
     end
 end
@@ -3886,6 +3939,14 @@ function main()
 
     gameWindow = ffi.cast('void*', readMemory(0x00C8CF88, 4, false))
     ffi.C.SetTimer(gameWindow, AFK_TIMER, 1000, nil)
+
+    pcall(sens.capture)
+    lua_thread.create(function()
+        while true do
+            wait(0)
+            sens.apply()
+        end
+    end)
 
     sampRegisterChatCommand('t', cmdShot)
     sampRegisterChatCommand('tmenu', function()
