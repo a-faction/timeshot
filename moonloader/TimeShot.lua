@@ -375,6 +375,8 @@ void* __stdcall MonitorFromWindow(void* hWnd, unsigned long dwFlags);
 int __stdcall GetMonitorInfoA(void* hMonitor, TS_MONITORINFO* lpmi);
 void* __stdcall GetForegroundWindow(void);
 short __stdcall GetKeyState(int key);
+typedef struct { unsigned long cbSize; unsigned long flags; void* hCursor; TS_POINT pt; } TS_CURSORINFO;
+int __stdcall GetCursorInfo(TS_CURSORINFO* info);
 unsigned int __stdcall SetTimer(void* hWnd, unsigned int id, unsigned int ms, void* proc);
 int __stdcall KillTimer(void* hWnd, unsigned int id);
 int __stdcall FlashWindow(void* hWnd, int invert);
@@ -3532,6 +3534,20 @@ imgui.OnFrame(function() return menuWindow[0] end, function(self)
     if fonts.body then imgui.PopFont() end
 end)
 
+local overlaysAllowed
+do
+    local cursor = ffi.new('TS_CURSORINFO')
+    overlaysAllowed = function()
+        if not isSampAvailable() or isPauseMenuActive() or sampGetGamestate() ~= 3 then return false end
+        if pickWindow[0] or radioWindow[0] or wheel.open[0] then return false end
+        if menuWindow[0] then return true end
+        if sampIsDialogActive() or sampIsCursorActive() or sampIsScoreboardOpen() then return false end
+        cursor.cbSize = ffi.sizeof(cursor)
+        if ffi.C.GetCursorInfo(cursor) ~= 0 and bit.band(cursor.flags, 1) ~= 0 then return false end
+        return true
+    end
+end
+
 function wheel.drawPrompt(sx, sy)
     local prompt = wheel.prompt
     local W = 360
@@ -3680,7 +3696,7 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
 end)
 
 local hud = imgui.OnFrame(function()
-    return cfg.hud and isSampAvailable() and not isPauseMenuActive() and sampGetGamestate() == 3
+    return cfg.hud and overlaysAllowed()
 end, function()
     local sx, sy = getScreenResolution()
     local fx, fy = cfg.hudX / 100, cfg.hudY / 100
@@ -3730,7 +3746,7 @@ end)
 hud.HideCursor = true
 
 local roster = imgui.OnFrame(function()
-    return cfg.members and isSampAvailable() and not isPauseMenuActive() and sampGetGamestate() == 3
+    return cfg.members and overlaysAllowed()
 end, function()
     local sx, sy = getScreenResolution()
     local fx, fy = cfg.membersX / 100, cfg.membersY / 100
@@ -3841,7 +3857,7 @@ imgui.OnFrame(function() return radioWindow[0] end, function()
 end)
 
 local widget = imgui.OnFrame(function()
-    return cfg.widget and isSampAvailable() and not isPauseMenuActive() and sampGetGamestate() == 3
+    return cfg.widget and overlaysAllowed()
 end, function()
     local sx = getScreenResolution()
     imgui.SetNextWindowPos(imgui.ImVec2(sx / 2, 10), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
