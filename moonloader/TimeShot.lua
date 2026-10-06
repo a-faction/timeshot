@@ -3817,6 +3817,10 @@ end)
 widget.HideCursor = true
 
 function onWindowMessage(msg, wparam, lparam)
+    if msg == 0x112 and bit.band(tonumber(wparam) or 0, 0xFFF0) == 0xF100 then
+        consumeWindowMessage(true, false)
+        return
+    end
     if hotkeys.message(msg, wparam, lparam) then
         consumeWindowMessage(true, true)
         return
