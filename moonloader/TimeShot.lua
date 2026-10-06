@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.10')
+script_version('1.0.11')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -157,6 +157,7 @@ bs.confirm = false
 bs.wheel = new.bool(false)
 local binder = { running = false, stop = false, name = '', index = 0, total = 0, commands = {} }
 local inputActive = false
+local onlineEdit = { day = nil, busy = false, hours = new.int(0), minutes = new.int(0), cleanHours = new.int(0), cleanMinutes = new.int(0) }
 local avatar = { texture = nil, dirty = true, path = getWorkingDirectory() .. '\\config\\TimeShot_avatar.jpg' }
 ns.pending = nil
 ns.refocus = false
@@ -2395,18 +2396,52 @@ function tabs.reportTab(W)
             valueRow(w, 'До отметки ' .. nextAt .. ' ч', formatDuration(nextAt * 3600 - seconds), COLOR.dim)
         end
         divider(w)
-        local today = os.date('%Y-%m-%d')
+        label('ПРАВКА ОНЛАЙНА ЗА ДЕНЬ')
+        local edit = onlineEdit
+        local chosen = false
+        for _, day in ipairs(dates) do
+            if day == edit.day and day <= todayDate then chosen = true end
+        end
+        if not chosen then edit.day = todayDate end
+        local first = true
+        for i, day in ipairs(dates) do
+            if day <= todayDate then
+                if not first then imgui.SameLine(0, 6) end
+                first = false
+                if button(day == edit.day and 'primary' or 'card', names[i] .. ' ' .. day:sub(9, 10) .. '.' .. day:sub(6, 7) .. '##oe' .. i,
+                    (w - 36) / 7) then
+                    edit.day, edit.busy = day, false
+                end
+            end
+        end
+
+        if not edit.busy then
+            local total, clean = cfg.online[edit.day] or 0, cfg.onlineClean[edit.day] or 0
+            edit.hours[0], edit.minutes[0] = math.floor(total / 3600), math.floor(total % 3600 / 60)
+            edit.cleanHours[0], edit.cleanMinutes[0] = math.floor(clean / 3600), math.floor(clean % 3600 / 60)
+        end
         local side = (w - 8) / 2
-        if button('card', '- 30 мин', side) then
-            cfg.online[today] = math.max(0, (cfg.online[today] or 0) - 1800)
-            saveConfig()
+        local changed, active = false, false
+        local function field(id, value, max, format)
+            imgui.PushItemWidth(side)
+            if imgui.SliderInt(id, value, 0, max, format) then changed = true end
+            if imgui.IsItemActive() then active = true end
+            imgui.PopItemWidth()
         end
+        field('##oe_hours', edit.hours, 24, 'всего: %d ч')
         imgui.SameLine()
-        if button('card', '+ 30 мин', side) then
-            cfg.online[today] = (cfg.online[today] or 0) + 1800
-            saveConfig()
+        field('##oe_minutes', edit.minutes, 59, '%d мин')
+        field('##oe_clean_hours', edit.cleanHours, 14, 'из них с 8:00 до 22:00: %d ч')
+        imgui.SameLine()
+        field('##oe_clean_minutes', edit.cleanMinutes, 59, '%d мин')
+        edit.busy = active
+        if changed then
+            local total = math.min(edit.hours[0] * 3600 + edit.minutes[0] * 60, 86400)
+            local clean = math.min(edit.cleanHours[0] * 3600 + edit.cleanMinutes[0] * 60, total, 14 * 3600)
+            cfg.online[edit.day], cfg.onlineClean[edit.day] = total, clean
+            cfgDirty = true
         end
-        dim('Счётчик ведёт скрипт — сверяй с /time.')
+        dim('Выбери день и выставь, сколько реально отстоял — например, за дни до установки скрипта. Сверяй с /time.')
     end)
 
     card(W, 'ДОКАЗАТЕЛЬСТВА НАКАЗАНИЙ', function(w)
