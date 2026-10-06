@@ -113,7 +113,8 @@ local cfg = {
     termStart = '',
     termDays = 30,
     termExtra = 0,
-    keys = { shot = 0, menu = 0 },
+    keys = { shot = 0, menu = 0, wheel = 0 },
+    wheelSeeded = false,
     accent = 1,
     online = {},
     onlineClean = {},
@@ -147,6 +148,7 @@ bs.text = new.char[32768]()
 bs.delay = new.int(2500)
 bs.index = nil
 bs.confirm = false
+bs.wheel = new.bool(false)
 local binder = { running = false, stop = false, name = '', index = 0, total = 0, commands = {} }
 local inputActive = false
 local avatar = { texture = nil, dirty = true, path = getWorkingDirectory() .. '\\config\\TimeShot_avatar.jpg' }
@@ -185,9 +187,11 @@ end
 
 local function loadConfig()
     local f = io.open(CONFIG_PATH, 'r')
-    if not f then return saveConfig() end
-    local ok, data = pcall(decodeJson, f:read('*a'))
-    f:close()
+    local ok, data = false, nil
+    if f then
+        ok, data = pcall(decodeJson, f:read('*a'))
+        f:close()
+    end
     if ok and type(data) == 'table' then
         for key, default in pairs(cfg) do
             if type(data[key]) == type(default) then cfg[key] = data[key] end
@@ -195,6 +199,32 @@ local function loadConfig()
     end
     cfg.delay = math.floor(cfg.delay)
     cfg.keys.shot, cfg.keys.menu = tonumber(cfg.keys.shot) or 0, tonumber(cfg.keys.menu) or 0
+    cfg.keys.wheel = tonumber(cfg.keys.wheel) or 0
+    if not cfg.wheelSeeded then
+        cfg.wheelSeeded = true
+        local presets = {
+            { 'Принять в организацию', table.concat({
+                '/me достал из папки бланк и внёс в него данные нового сотрудника',
+                '/do Бланк заполнен, форма и рация лежат на столе.',
+                '/me передал форму и рацию человеку напротив',
+                '/invite {tid}',
+            }, '\n') },
+            { 'Уволить', table.concat({
+                '/me открыл базу данных и удалил личное дело сотрудника {tname}',
+                '/do Личное дело удалено из базы данных.',
+                '/uninvite {tid} {reason}',
+            }, '\n') },
+            { 'Изменить ранг', table.concat({
+                '/me достал новые погоны и передал их сотруднику {tname}',
+                '/do Погоны переданы.',
+                '/giverank {tid} {trank}',
+            }, '\n') },
+        }
+        for _, preset in ipairs(presets) do
+            cfg.binds[#cfg.binds + 1] = { name = preset[1], cmd = '', delay = 2500, text = preset[2], key = 0, wheel = true }
+        end
+        saveConfig()
+    end
     if cfg.weekStart ~= 0 then cfg.weekStart = 1 end
 
     local cutoff = os.date('%Y-%m-%d', os.time() - 30 * 86400)
@@ -1422,9 +1452,10 @@ local function takeAvatar(reopenMenu)
     end)
 end
 
-local RESERVED_COMMANDS = { t = true, tmenu = true, td = true, tn = true, tnotes = true, tstop = true, tavatar = true, tupdate = true }
+local RESERVED_COMMANDS = { t = true, tmenu = true, td = true, tn = true, tnotes = true, tstop = true, tavatar = true,
+    tupdate = true, tw = true }
 
-local function expandBindLine(line)
+local function expandBindLine(line, extra)
     local nick = myNick()
     local _, id = sampGetPlayerIdByCharHandle(PLAYER_PED)
     local values = {
@@ -1435,6 +1466,7 @@ local function expandBindLine(line)
         time = os.date('%H:%M'),
         date = os.date('%d.%m.%Y'),
     }
+    for key, value in pairs(extra or {}) do values[key] = value end
     return (line:gsub('{(%a+)}', function(key) return values[key] end))
 end
 
@@ -1456,22 +1488,25 @@ local function splitBindLine(line, limit)
     return parts
 end
 
-local function bindLines(bind)
+local function bindLines(bind, extra)
     local lines = {}
     for raw in (bind.text .. '\n'):gmatch('(.-)\r?\n') do
         local line = raw:gsub('^%s+', ''):gsub('%s+$', '')
         if line ~= '' and line:sub(1, 2) ~= '//' then
-            for _, part in ipairs(splitBindLine(cp(expandBindLine(line)), 115)) do lines[#lines + 1] = part end
+            for _, part in ipairs(splitBindLine(cp(expandBindLine(line, extra)), 115)) do lines[#lines + 1] = part end
         end
     end
     return lines
 end
 
-local function runBind(bind)
+local function runBind(bind, extra)
     if binder.running then
         return notify('Уже идёт бинд «' .. binder.name .. '». Остановить: /tstop')
     end
-    local lines = bindLines(bind)
+    if not extra and (bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)) then
+        return notify('Бинд «' .. bind.name .. '» работает с игроком рядом — запускай его из кругового меню.')
+    end
+    local lines = bindLines(bind, extra)
     if #lines == 0 then return notify('В бинде «' .. bind.name .. '» нет строк.') end
     local delay = math.max(tonumber(bind.delay) or 2500, 500)
     binder.running, binder.stop, binder.name, binder.index, binder.total = true, false, bind.name, 0, #lines
@@ -1509,6 +1544,7 @@ local function selectBind(index)
     setBuffer(bs.text, bind.text or '')
     bs.delay[0] = tonumber(bind.delay) or 2500
     bs.key = tonumber(bind.key) or 0
+    bs.wheel[0] = bind.wheel == true
 end
 
 local function newBind()
@@ -1518,6 +1554,7 @@ local function newBind()
     setBuffer(bs.text, '')
     bs.delay[0] = 2500
     bs.key = 0
+    bs.wheel[0] = false
 end
 
 local function saveBind()
@@ -1541,7 +1578,8 @@ local function saveBind()
             return false
         end
     end
-    local bind = { name = name, cmd = command, delay = bs.delay[0], text = ffi.string(bs.text), key = bs.key or 0 }
+    local bind = { name = name, cmd = command, delay = bs.delay[0], text = ffi.string(bs.text), key = bs.key or 0,
+        wheel = bs.wheel[0] }
     if bs.index then
         cfg.binds[bs.index] = bind
     else
@@ -1561,6 +1599,67 @@ local function deleteBind()
         registerBinds()
     end
     newBind()
+end
+
+local wheel = { open = new.bool(false), target = nil, items = {}, prompt = nil, rank = new.int(1), reason = new.char[64]() }
+
+function wheel.findTarget()
+    local aimed, ped = getCharPlayerIsTargeting(PLAYER_HANDLE)
+    if aimed and ped then
+        local found, id = sampGetPlayerIdByCharHandle(ped)
+        if found then return id end
+    end
+    local mx, my, mz = getCharCoordinates(PLAYER_PED)
+    local best, bestDistance
+    for _, other in ipairs(getAllChars()) do
+        if other ~= PLAYER_PED then
+            local found, id = sampGetPlayerIdByCharHandle(other)
+            if found then
+                local x, y, z = getCharCoordinates(other)
+                local distance = getDistanceBetweenCoords3d(mx, my, mz, x, y, z)
+                if distance <= 6 and (not bestDistance or distance < bestDistance) then best, bestDistance = id, distance end
+            end
+        end
+    end
+    return best
+end
+
+function wheel.show()
+    if wheel.open[0] then
+        wheel.open[0] = false
+        return
+    end
+    local items = {}
+    for _, bind in ipairs(cfg.binds) do
+        if type(bind) == 'table' and bind.wheel == true and #items < 8 then items[#items + 1] = bind end
+    end
+    if #items == 0 then return notify('В круговом меню пусто: отметь нужные бинды галочкой «В круговом меню».') end
+    local id = wheel.findTarget()
+    if not id then return notify('Рядом нет игрока: подойди ближе или наведи на него прицел.') end
+    wheel.items, wheel.prompt = items, nil
+    wheel.target = { id = id, nick = sampGetPlayerNickname(id) }
+    wheel.open[0] = true
+end
+
+function wheel.run(bind)
+    local target = wheel.target
+    wheel.open[0], wheel.prompt = false, nil
+    runBind(bind, {
+        tid = tostring(target.id),
+        tname = (target.nick:gsub('_', ' ')),
+        trank = tostring(wheel.rank[0]),
+        reason = (ffi.string(wheel.reason):gsub('^%s+', ''):gsub('%s+$', '')),
+    })
+end
+
+function wheel.choose(bind)
+    local needRank = bind.text:find('{trank}', 1, true) ~= nil
+    local needReason = bind.text:find('{reason}', 1, true) ~= nil
+    if needRank or needReason then
+        wheel.prompt = { bind = bind, rank = needRank, reason = needReason }
+    else
+        wheel.run(bind)
+    end
 end
 
 local hotkeys = {
@@ -1618,6 +1717,7 @@ function hotkeys.fire(code)
         if menuWindow[0] then refreshStats() end
     end
     if code == cfg.keys.shot then cmdShot() end
+    if code == cfg.keys.wheel then wheel.show() end
     for _, bind in ipairs(cfg.binds) do
         if type(bind) == 'table' and tonumber(bind.key) == code then
             runBind(bind)
@@ -1643,7 +1743,7 @@ function hotkeys.message(msg, key, lparam)
     end
     if bit.band(tonumber(lparam) or 0, 0x40000000) ~= 0 then return false end
     if isPauseMenuActive() or sampIsChatInputActive() or sampIsDialogActive() then return false end
-    if pickWindow[0] or radioWindow[0] or (menuWindow[0] and inputActive) then return false end
+    if pickWindow[0] or radioWindow[0] or (menuWindow[0] and inputActive) or wheel.prompt then return false end
     hotkeys.fire(hotkeys.code(key))
     return false
 end
@@ -2427,6 +2527,11 @@ function tabs.generalTab(W)
         txt('Открыть и закрыть это меню')
         alignRight(w, 190)
         hotkeys.button('menu', cfg.keys.menu, 190)
+        divider(w)
+        imgui.AlignTextToFramePadding()
+        txt('Круговое меню действий с игроком')
+        alignRight(w, 190)
+        hotkeys.button('wheel', cfg.keys.wheel, 190)
         dim('Нажми кнопку, затем клавишу — можно с Ctrl, Alt или Shift. Esc — отмена, Backspace — убрать.')
         dim('Клавиши для биндов задаются в разделе «Биндер». В чате и окнах клавиши не срабатывают.')
     end)
@@ -2484,6 +2589,7 @@ function tabs.generalTab(W)
             { '/tstop', 'остановить бинд' },
             { '/tavatar', 'сфотографировать персонажа для аватара' },
             { '/tupdate', 'проверить обновление' },
+            { '/tw', 'круговое меню действий с игроком рядом' },
         }
         for i, command in ipairs(commands) do
             if i > 1 then divider(w) end
@@ -2832,11 +2938,14 @@ function tabs.binderPanel(W)
     imgui.SliderInt('##bind_delay', bs.delay, 500, 10000, '%d мс')
     imgui.PopItemWidth()
 
+    imgui.Checkbox('Показывать в круговом меню — действие с игроком рядом', bs.wheel)
+
     label('ТЕКСТ — КАЖДАЯ СТРОКА УХОДИТ ОТДЕЛЬНЫМ СООБЩЕНИЕМ')
     imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text),
-        imgui.ImVec2(w, imgui.GetContentRegionAvail().y - 84))
+        imgui.ImVec2(w, imgui.GetContentRegionAvail().y - 104))
     imgui.PushTextWrapPos(imgui.GetCursorPosX() + w)
     dim('Подстановки: {nick} {id} {rank} {tag} {time} {date}. Строки с // пропускаются, длинные делятся сами. Стоп: /tstop')
+    dim('Для кругового меню: {tid} и {tname} — ID и имя игрока рядом, {trank} и {reason} — скрипт спросит ранг и причину.')
     imgui.PopTextWrapPos()
 
     if button('primary', 'Сохранить', 130) then saveBind() end
@@ -3279,6 +3388,130 @@ imgui.OnFrame(function() return menuWindow[0] end, function(self)
     if fonts.body then imgui.PopFont() end
 end)
 
+function wheel.drawPrompt(sx, sy)
+    local prompt = wheel.prompt
+    local W = 360
+    imgui.SetNextWindowPos(imgui.ImVec2(sx / 2, sy / 2), imgui.Cond.Always, imgui.ImVec2(0.5, 0.5))
+    imgui.Begin('##timeshot_wheel_prompt', nil, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize
+        + imgui.WindowFlags.NoMove + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoSavedSettings)
+    if fonts.heading then imgui.PushFont(fonts.heading) end
+    txt(prompt.bind.name)
+    if fonts.heading then imgui.PopFont() end
+    dim((wheel.target.nick:gsub('_', ' ')) .. ' [' .. wheel.target.id .. ']')
+    imgui.Dummy(imgui.ImVec2(W, 2))
+    if prompt.rank then
+        label('НОВЫЙ РАНГ')
+        imgui.PushItemWidth(W)
+        imgui.SliderInt('##wheel_rank', wheel.rank, 1, 9, 'ранг %d')
+        imgui.PopItemWidth()
+    end
+    if prompt.reason then
+        label('ПРИЧИНА')
+        imgui.PushItemWidth(W)
+        imgui.InputText('##wheel_reason', wheel.reason, ffi.sizeof(wheel.reason))
+        imgui.PopItemWidth()
+    end
+    gap(2)
+    local filled = not prompt.reason or ffi.string(wheel.reason):match('%S') ~= nil
+    local half = (W - 8) / 2
+    if button(filled and 'primary' or 'card', 'Выполнить', half) and filled then wheel.run(prompt.bind) end
+    imgui.SameLine()
+    if button('card', 'Отмена', half) then wheel.open[0], wheel.prompt = false, nil end
+    imgui.End()
+end
+
+imgui.OnFrame(function() return wheel.open[0] end, function()
+    if not wheel.target or #wheel.items == 0 then
+        wheel.open[0] = false
+        return
+    end
+    local sx, sy = getScreenResolution()
+    if fonts.body then imgui.PushFont(fonts.body) end
+    if wheel.prompt then
+        wheel.drawPrompt(sx, sy)
+        if fonts.body then imgui.PopFont() end
+        return
+    end
+
+    imgui.SetNextWindowPos(imgui.ImVec2(0, 0), imgui.Cond.Always)
+    imgui.SetNextWindowSize(imgui.ImVec2(sx, sy), imgui.Cond.Always)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 0)
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0, 0, 0, 0.35))
+    imgui.Begin('##timeshot_wheel', nil, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove
+        + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings)
+
+    local draw = imgui.GetWindowDrawList()
+    local cx, cy = sx / 2, sy / 2
+    local inner, outer = 78, 220
+    local count = #wheel.items
+    local step = 2 * math.pi / count
+    local start = -math.pi / 2 - step / 2
+    local mouse = imgui.GetMousePos()
+    local dx, dy = mouse.x - cx, mouse.y - cy
+    local distance = math.sqrt(dx * dx + dy * dy)
+    local hovered
+    if distance >= inner and distance <= outer + 30 then
+        hovered = math.floor(((math.atan2(dy, dx) - start) % (2 * math.pi)) / step) + 1
+        if hovered > count then hovered = count end
+    end
+
+    local function point(radius, angle)
+        return imgui.ImVec2(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+    end
+    local idle, active = imgui.GetColorU32Vec4(COLOR.window), imgui.GetColorU32Vec4(COLOR.accent)
+    local textIdle, textActive = imgui.GetColorU32Vec4(COLOR.text), imgui.GetColorU32Vec4(COLOR.onAccent)
+    if fonts.strong then imgui.PushFont(fonts.strong) end
+    for i = 1, count do
+        local from, to = start + (i - 1) * step + 0.015, start + i * step - 0.015
+        local pieces = math.max(4, math.ceil((to - from) / 0.08))
+        local fill = i == hovered and active or idle
+        for piece = 0, pieces - 1 do
+            local a, b = from + (to - from) * piece / pieces, from + (to - from) * (piece + 1) / pieces
+            draw:AddQuadFilled(point(inner, a), point(outer, a), point(outer, b), point(inner, b), fill)
+        end
+
+        local name = tostring(wheel.items[i].name)
+        local first, second = name, nil
+        if imgui.CalcTextSize(name).x > 130 then
+            local cut = name:find(' ', math.floor(#name / 2), true) or name:find(' ', 1, true)
+            if cut then first, second = name:sub(1, cut - 1), name:sub(cut + 1) end
+        end
+        local middle = point((inner + outer) / 2, (from + to) / 2)
+        local color = i == hovered and textActive or textIdle
+        local size = imgui.CalcTextSize(first)
+        local top = middle.y - (second and size.y or size.y / 2)
+        draw:AddText(imgui.ImVec2(middle.x - size.x / 2, top), color, first)
+        if second then
+            local size2 = imgui.CalcTextSize(second)
+            draw:AddText(imgui.ImVec2(middle.x - size2.x / 2, top + size.y + 2), color, second)
+        end
+    end
+    if fonts.strong then imgui.PopFont() end
+
+    draw:AddCircleFilled(imgui.ImVec2(cx, cy), inner - 8, imgui.GetColorU32Vec4(COLOR.panel), 48)
+    local who = (wheel.target.nick:gsub('_', ' '))
+    local whoSize = imgui.CalcTextSize(who)
+    draw:AddText(imgui.ImVec2(cx - whoSize.x / 2, cy - whoSize.y - 1), textIdle, who)
+    local idText = 'ID ' .. wheel.target.id
+    local idSize = imgui.CalcTextSize(idText)
+    draw:AddText(imgui.ImVec2(cx - idSize.x / 2, cy + 2), imgui.GetColorU32Vec4(COLOR.dim), idText)
+    local hint = 'ЛКМ — выбрать     ПКМ или Esc — закрыть'
+    local hintSize = imgui.CalcTextSize(hint)
+    draw:AddText(imgui.ImVec2(cx - hintSize.x / 2, cy + outer + 26), imgui.GetColorU32Vec4(COLOR.text), hint)
+
+    if hovered and imgui.IsMouseClicked(0) then
+        wheel.choose(wheel.items[hovered])
+    elseif imgui.IsMouseClicked(1) then
+        wheel.open[0] = false
+    end
+
+    imgui.End()
+    imgui.PopStyleColor(1)
+    imgui.PopStyleVar(2)
+    if fonts.body then imgui.PopFont() end
+end)
+
 local hud = imgui.OnFrame(function()
     return cfg.hud and isSampAvailable() and not isPauseMenuActive() and sampGetGamestate() == 3
 end, function()
@@ -3492,7 +3725,7 @@ function onWindowMessage(msg, wparam, lparam)
         return
     end
     if (msg == 0x100 or msg == 0x101) and wparam == 0x1B and not isPauseMenuActive()
-        and (pickWindow[0] or menuWindow[0] or radioWindow[0]) then
+        and (pickWindow[0] or menuWindow[0] or radioWindow[0] or wheel.open[0]) then
         if menuWindow[0] and not pickWindow[0] and not radioWindow[0]
             and (inputActive or (menuTab == NOTES_TAB and ns.editing)) then
             consumeWindowMessage(true, true)
@@ -3500,7 +3733,9 @@ function onWindowMessage(msg, wparam, lparam)
         end
         consumeWindowMessage(true, false)
         if msg == 0x101 then
-            if pickWindow[0] then
+            if wheel.open[0] then
+                wheel.open[0], wheel.prompt = false, nil
+            elseif pickWindow[0] then
                 discardPending()
             elseif radioWindow[0] then
                 radioWindow[0] = false
@@ -3549,6 +3784,7 @@ function main()
         if binder.running then binder.stop = true else notify('Сейчас ни один бинд не запущен.') end
     end)
     sampRegisterChatCommand('tavatar', function() takeAvatar(false) end)
+    sampRegisterChatCommand('tw', wheel.show)
     sampRegisterChatCommand('tupdate', function() update.check(true) end)
     registerBinds()
     local function toggleNotes()
