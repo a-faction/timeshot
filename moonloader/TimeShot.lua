@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.11')
+script_version('1.0.12')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -18,26 +18,144 @@ end
 
 local AUTHOR = 'jalisco'
 local CONFIG_PATH = getWorkingDirectory() .. '\\config\\TimeShot.json'
+
+ffi.cdef[[
+int __stdcall WideCharToMultiByte(unsigned int codePage, unsigned long flags, const wchar_t* source, int sourceLength, char* target, int targetSize, const char* fallback, int* usedFallback);
+int __stdcall CreateDirectoryW(const wchar_t* path, void* security);
+unsigned long __stdcall GetFileAttributesW(const wchar_t* path);
+int __stdcall MoveFileExW(const wchar_t* from, const wchar_t* to, unsigned long flags);
+int __stdcall DeleteFileW(const wchar_t* path);
+void* __stdcall CreateFileW(const wchar_t* path, unsigned long access, unsigned long share, void* security, unsigned long creation, unsigned long flags, void* template);
+int __stdcall ReadFile(void* file, void* buffer, unsigned long size, unsigned long* done, void* overlapped);
+int __stdcall WriteFile(void* file, const void* buffer, unsigned long size, unsigned long* done, void* overlapped);
+unsigned long __stdcall GetFileSize(void* file, unsigned long* high);
+unsigned long __stdcall SetFilePointer(void* file, long distance, long* high, unsigned long method);
+int __stdcall CloseHandle(void* handle);
+typedef struct { unsigned long attributes; unsigned long times[6]; unsigned long sizeHigh, sizeLow, reserved0, reserved1; wchar_t name[260]; wchar_t altName[14]; } TS_FIND_DATAW;
+void* __stdcall FindFirstFileW(const wchar_t* path, TS_FIND_DATAW* data);
+int __stdcall FindNextFileW(void* handle, TS_FIND_DATAW* data);
+int __stdcall FindClose(void* handle);
+long __stdcall SHGetFolderPathW(void* window, int folder, void* token, unsigned long flags, wchar_t* path);
+void* __stdcall ShellExecuteW(void* window, const wchar_t* operation, const wchar_t* file, const wchar_t* parameters, const wchar_t* directory, int show);
+]]
+
+local fs = { invalid = ffi.cast('void*', -1) }
+
+function fs.wide(text, codePage)
+    codePage = codePage or 65001
+    local size = ffi.C.MultiByteToWideChar(codePage, 0, text, #text, nil, 0)
+    local buffer = ffi.new('wchar_t[?]', size + 1)
+    if size > 0 then ffi.C.MultiByteToWideChar(codePage, 0, text, #text, buffer, size) end
+    return buffer
+end
+
+function fs.utf8(wide)
+    local size = ffi.C.WideCharToMultiByte(65001, 0, wide, -1, nil, 0, nil, nil)
+    if size <= 1 then return '' end
+    local buffer = ffi.new('char[?]', size)
+    ffi.C.WideCharToMultiByte(65001, 0, wide, -1, buffer, size, nil, nil)
+    return ffi.string(buffer, size - 1)
+end
+
+function fs.fromAnsi(text)
+    return fs.utf8(fs.wide(text, 0))
+end
+
+function fs.attributes(path)
+    local value = ffi.C.GetFileAttributesW(fs.wide(path))
+    if value == 0xFFFFFFFF then return nil end
+    return value
+end
+
+function fs.exists(path)
+    return fs.attributes(path) ~= nil
+end
+
+function fs.isDir(path)
+    local value = fs.attributes(path)
+    return value ~= nil and bit.band(value, 0x10) ~= 0
+end
+
+function fs.mkdir(path)
+    if fs.isDir(path) then return true end
+    local parent = path:match('^(.*)\\[^\\]+$')
+    if parent and parent ~= '' and not parent:match('^%a:$') then fs.mkdir(parent) end
+    ffi.C.CreateDirectoryW(fs.wide(path), nil)
+    return fs.isDir(path)
+end
+
+function fs.move(from, to)
+    return ffi.C.MoveFileExW(fs.wide(from), fs.wide(to), 2) ~= 0
+end
+
+function fs.remove(path)
+    return ffi.C.DeleteFileW(fs.wide(path)) ~= 0
+end
+
+function fs.list(dir)
+    local entries, data = {}, ffi.new('TS_FIND_DATAW')
+    local handle = ffi.C.FindFirstFileW(fs.wide(dir .. '\\*'), data)
+    if handle == nil or handle == fs.invalid then return entries end
+    repeat
+        local name = fs.utf8(data.name)
+        if name ~= '.' and name ~= '..' and name ~= '' then
+            entries[#entries + 1] = { name = name, isDir = bit.band(data.attributes, 0x10) ~= 0 }
+        end
+    until ffi.C.FindNextFileW(handle, data) == 0
+    ffi.C.FindClose(handle)
+    return entries
+end
+
+function fs.read(path)
+    local handle = ffi.C.CreateFileW(fs.wide(path), 0x80000000, 3, nil, 3, 0x80, nil)
+    if handle == nil or handle == fs.invalid then return nil end
+    local size = ffi.C.GetFileSize(handle, nil)
+    local text = ''
+    if size ~= 0xFFFFFFFF and size > 0 then
+        local buffer, done = ffi.new('char[?]', size), ffi.new('unsigned long[1]')
+        if ffi.C.ReadFile(handle, buffer, size, done, nil) ~= 0 then text = ffi.string(buffer, done[0]) end
+    end
+    ffi.C.CloseHandle(handle)
+    return text
+end
+
+function fs.write(path, text, append)
+    local handle = ffi.C.CreateFileW(fs.wide(path), 0x40000000, 1, nil, append and 4 or 2, 0x80, nil)
+    if handle == nil or handle == fs.invalid then return false end
+    if append then ffi.C.SetFilePointer(handle, 0, nil, 2) end
+    local done = ffi.new('unsigned long[1]')
+    local ok = ffi.C.WriteFile(handle, text, #text, done, nil) ~= 0
+    ffi.C.CloseHandle(handle)
+    return ok
+end
+
+function fs.open(path)
+    ffi.load('shell32').ShellExecuteW(nil, fs.wide('open'), fs.wide(path), nil, nil, 1)
+end
+
 local BASE_DIR, BASE_FALLBACK = nil, false
 do
-    local documents = getFolderPath(5)
-    local fallback = getWorkingDirectory() .. '\\TimeShot'
-    local preferred = type(documents) == 'string' and documents ~= ''
-        and (documents .. '\\GTA San Andreas User Files\\TimeShot by Jalisco') or nil
-    local function usable(dir)
-        if doesDirectoryExist(dir) then return true end
-        pcall(createDirectory, dir)
-        return doesDirectoryExist(dir)
+    local override = os.getenv('TIMESHOT_HOME')
+    local fallback = fs.fromAnsi(getWorkingDirectory()) .. '\\TimeShot'
+    local preferred
+    if override and override ~= '' then
+        preferred = fs.fromAnsi(override)
+    else
+        local buffer = ffi.new('wchar_t[520]')
+        if ffi.load('shell32').SHGetFolderPathW(nil, 5, nil, 0, buffer) == 0 then
+            local documents = fs.utf8(buffer)
+            if documents ~= '' then preferred = documents .. '\\GTA San Andreas User Files\\TimeShot by Jalisco' end
+        end
     end
-    if preferred and usable(preferred) then
+    if preferred and fs.mkdir(preferred) then
         BASE_DIR = preferred
     else
-        usable(fallback)
+        fs.mkdir(fallback)
         BASE_DIR, BASE_FALLBACK = fallback, true
     end
 end
 local TEMP_FILE = BASE_DIR .. '\\_timeshot_tmp.jpg'
-local NOTES_DIR = BASE_DIR .. '\\' .. cp('Заметки')
+local NOTES_DIR = BASE_DIR .. '\\Заметки'
 local WEEK_PATTERN = '^%d%d%.%d%d%.%d%d%d%d %- %d%d%.%d%d%.%d%d%d%d$'
 local AFK_TIMER = 0x7153
 
@@ -106,6 +224,7 @@ local cfg = {
     membersId = true,
     membersAfk = true,
     binds = {},
+    hidden = {},
     snakeBest = 0,
     autoUpdate = true,
     interviewPlace = '',
@@ -158,7 +277,8 @@ bs.wheel = new.bool(false)
 local binder = { running = false, stop = false, name = '', index = 0, total = 0, commands = {} }
 local inputActive = false
 local onlineEdit = { day = nil, busy = false, hours = new.int(0), minutes = new.int(0), cleanHours = new.int(0), cleanMinutes = new.int(0) }
-local avatar = { texture = nil, dirty = true, path = getWorkingDirectory() .. '\\config\\TimeShot_avatar.jpg' }
+local avatar = { texture = nil, dirty = true, ansi = getWorkingDirectory() .. '\\config\\TimeShot_avatar.jpg',
+    path = fs.fromAnsi(getWorkingDirectory()) .. '\\config\\TimeShot_avatar.jpg' }
 ns.pending = nil
 ns.refocus = false
 local members = { list = {}, collecting = {}, waiting = false, requestAt = 0, lastRequest = 0, at = 0, misses = 0, fraction = '' }
@@ -288,11 +408,7 @@ local function loadConfig()
 end
 
 local function ensureDir(path)
-    if doesDirectoryExist(path) then return true end
-    local parent = path:match('^(.*)\\[^\\]+$')
-    if parent and parent ~= '' and not parent:match('^%a:$') then ensureDir(parent) end
-    pcall(createDirectory, path)
-    return doesDirectoryExist(path)
+    return fs.mkdir(path)
 end
 
 local function cleanName(s)
@@ -325,8 +441,8 @@ local function rootDir()
 end
 
 local function categoryDir(name, sub)
-    local dir = rootDir() .. '\\' .. u8:decode(name)
-    if sub and sub ~= '' then dir = dir .. '\\' .. u8:decode(sub) end
+    local dir = rootDir() .. '\\' .. name
+    if sub and sub ~= '' then dir = dir .. '\\' .. sub end
     return dir
 end
 
@@ -337,6 +453,8 @@ local function addCategory(raw)
         if existing == name then return name end
     end
     table.insert(cfg.categories, name)
+    cfg.hidden[name] = nil
+    fs.mkdir(rootDir() .. '\\' .. name)
     saveConfig()
     return name
 end
@@ -386,7 +504,7 @@ int __stdcall FindNextFileA(void* handle, TS_FIND_DATA* data);
 int __stdcall FindClose(void* handle);
 void* __stdcall ShellExecuteA(void* hWnd, const char* op, const char* file, const char* params, const char* dir, int show);
 int __stdcall PlaySoundA(const char* sound, void* module, unsigned long flags);
-long __stdcall D3DXSaveSurfaceToFileA(const char* file, int format, void* surface, const void* palette, const TS_RECT* rect);
+long __stdcall D3DXSaveSurfaceToFileW(const wchar_t* file, int format, void* surface, const void* palette, const TS_RECT* rect);
 ]]
 
 local D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, D3DXIFF_JPG = 21, 2, 1
@@ -394,7 +512,7 @@ local INVALID_HANDLE = ffi.cast('void*', -1)
 
 local saveSurface
 for _, ver in ipairs({ 25, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 24 }) do
-    local ok, fn = pcall(function() return ffi.load('d3dx9_' .. ver).D3DXSaveSurfaceToFileA end)
+    local ok, fn = pcall(function() return ffi.load('d3dx9_' .. ver).D3DXSaveSurfaceToFileW end)
     if ok then
         saveSurface = fn
         break
@@ -446,7 +564,7 @@ local function captureFrontBuffer(device, path, crop)
             rect.right = math.min(rect.left + crop.size, right)
             rect.bottom = math.min(rect.top + crop.size, bottom)
         end
-        hr = saveSurface(path, D3DXIFF_JPG, surface, nil, rect)
+        hr = saveSurface(fs.wide(path), D3DXIFF_JPG, surface, nil, rect)
     end
     releaseSurface(surface)
     return hr >= 0
@@ -462,7 +580,7 @@ local function captureBackBuffer(device, path, crop)
         rect.left, rect.top = math.max(crop.x, 0), math.max(crop.y, 0)
         rect.right, rect.bottom = rect.left + crop.size, rect.top + crop.size
     end
-    hr = saveSurface(path, D3DXIFF_JPG, out[0], nil, rect)
+    hr = saveSurface(fs.wide(path), D3DXIFF_JPG, out[0], nil, rect)
     releaseSurface(out[0])
     return hr >= 0
 end
@@ -474,31 +592,42 @@ local function captureScreen(path, crop)
         return captureFrontBuffer(device, path, crop) or captureBackBuffer(device, path, crop)
     end)
     if not ok then return false, tostring(result) end
-    if not result or not doesFileExist(path) then return false, 'DirectX не отдал кадр' end
+    if not result or not fs.exists(path) then return false, 'DirectX не отдал кадр' end
     return true
 end
 
 local function listDir(dir)
-    local entries, data = {}, ffi.new('TS_FIND_DATA')
-    local handle = ffi.C.FindFirstFileA(dir .. '\\*', data)
-    if handle == nil or handle == INVALID_HANDLE then return entries end
-    repeat
-        local name = ffi.string(data.name)
-        if name ~= '.' and name ~= '..' then
-            entries[#entries + 1] = { name = name, isDir = bit.band(data.attributes, 0x10) ~= 0 }
-        end
-    until ffi.C.FindNextFileA(handle, data) == 0
-    ffi.C.FindClose(handle)
-    return entries
+    return fs.list(dir)
 end
 
+local function syncFolders()
+    local root = rootDir()
+    if not fs.mkdir(root) then return end
+    local known = {}
+    for _, name in ipairs(cfg.categories) do
+        known[name] = true
+        fs.mkdir(root .. '\\' .. name)
+    end
+    local added = false
+    for _, entry in ipairs(fs.list(root)) do
+        local name = entry.name
+        if entry.isDir and not known[name] and not cfg.hidden[name] and name ~= 'Заметки'
+            and name:sub(1, 1) ~= '.' and not name:match(WEEK_PATTERN) then
+            cfg.categories[#cfg.categories + 1] = name
+            known[name] = true
+            added = true
+        end
+    end
+    if added then saveConfig() end
+end
 local function refreshStats()
+    pcall(syncFolders)
     local result = { cats = {}, oldPunish = 0, punishTotal = 0 }
     local currentWeek = weekFolder()
     local _, inWeek = weekDates()
     local today = os.date('%Y-%m-%d')
     local cutoff = os.date('%Y-%m-%d', os.time() - 5 * 86400)
-    local punishDir = cp(findCategory('Наказ', 'Наказания'))
+    local punishDir = findCategory('Наказ', 'Наказания')
 
     local function walk(dir, week, category, rel, depth)
         for _, entry in ipairs(listDir(dir)) do
@@ -518,7 +647,7 @@ local function refreshStats()
                 local counted
                 if cfg.weekly then counted = week == currentWeek else counted = date ~= nil and inWeek[date] == true end
                 if counted then
-                    local key = u8(category)
+                    local key = category
                     local cat = result.cats[key]
                     if not cat then
                         cat = { week = 0, files = {}, todayTimes = {} }
@@ -574,16 +703,13 @@ end
 local function journal(line)
     local dir = rootDir()
     if not ensureDir(dir) then return end
-    local f = io.open(dir .. '\\' .. cp('Журнал.txt'), 'a')
-    if f then
-        f:write(os.date('%d.%m.%Y %H:%M:%S') .. ' | ' .. line .. '\n')
-        f:close()
-    end
+    local path = dir .. '\\Журнал.txt'
+    local prefix = fs.exists(path) and '' or '\239\187\191'
+    fs.write(path, prefix .. os.date('%d.%m.%Y %H:%M:%S') .. ' | ' .. u8(line) .. '\r\n', true)
 end
-
 local function discardPending()
     if pending then
-        os.remove(pending)
+        fs.remove(pending)
         pending = nil
     end
     pickWindow[0] = false
@@ -595,15 +721,14 @@ local function saveShot(name, sub)
     if not ensureDir(dir) then return notify('Не удалось создать папку «' .. name .. '».') end
     local stamp = os.date('%Y-%m-%d_%H-%M-%S')
     local dest, n = dir .. '\\' .. stamp .. '.jpg', 1
-    while doesFileExist(dest) do
+    while fs.exists(dest) do
         n = n + 1
         dest = ('%s\\%s_%d.jpg'):format(dir, stamp, n)
     end
-    local ok, err = os.rename(pending, dest)
-    if not ok then return notify('Не удалось сохранить скриншот: ' .. u8(tostring(err))) end
+    if not fs.move(pending, dest) then return notify('Не удалось сохранить скриншот в папку «' .. name .. '».') end
     pending = nil
     pickWindow[0] = false
-    notify('Скриншот сохранён: {4FA3FF}' .. u8(dest:sub(#BASE_DIR + 2)))
+    notify('Скриншот сохранён: {4FA3FF}' .. dest:sub(#BASE_DIR + 2))
     refreshStats()
 end
 
@@ -641,6 +766,7 @@ local function cmdShot()
         busy = false
         if not ok then return notify('Не удалось сделать скриншот: ' .. err) end
         pending = TEMP_FILE
+        pcall(syncFolders)
         pickWindow[0] = true
     end)
 end
@@ -662,7 +788,7 @@ local function autoShot(folder)
 end
 
 local function openPath(path)
-    ffi.load('shell32').ShellExecuteA(nil, 'open', path, nil, nil, 1)
+    fs.open(path)
 end
 
 local function openFolder(path)
@@ -690,7 +816,7 @@ local function buildReport()
         add(('%s — %d скр.'):format(name, cat and cat.week or 0))
         if cat then
             table.sort(cat.files)
-            for i, file in ipairs(cat.files) do add(('  %d. %s — '):format(i, u8(file))) end
+            for i, file in ipairs(cat.files) do add(('  %d. %s — '):format(i, file)) end
         end
         add('')
     end
@@ -702,13 +828,12 @@ local function buildReport()
 
     local dir = rootDir()
     ensureDir(dir)
-    local path = dir .. '\\' .. cp('Отчёт.txt')
-    local f = io.open(path, 'w')
-    if not f then return notify('Не удалось записать файл отчёта.') end
-    f:write(cp(table.concat(lines, '\r\n')))
-    f:close()
+    local path = dir .. '\\Отчёт.txt'
+    if not fs.write(path, '\239\187\191' .. table.concat(lines, '\r\n')) then
+        return notify('Не удалось записать файл отчёта.')
+    end
     openPath(path)
-    notify('Отчёт собран: {4FA3FF}' .. u8(path:sub(#BASE_DIR + 2)))
+    notify('Отчёт собран: {4FA3FF}' .. path:sub(#BASE_DIR + 2))
 end
 
 local function upcomingSlots()
@@ -1402,14 +1527,12 @@ local function setBuffer(buffer, text)
 end
 
 local function notePath(name)
-    return NOTES_DIR .. '\\' .. cp(name) .. '.txt'
+    return NOTES_DIR .. '\\' .. name .. '.txt'
 end
 
 local function readNote(name)
-    local f = io.open(notePath(name), 'rb')
-    if not f then return nil end
-    local text = f:read('*a')
-    f:close()
+    local text = fs.read(notePath(name))
+    if not text then return nil end
     if text:sub(1, 3) == '\239\187\191' then text = text:sub(4) end
     if not isUtf8(text) then text = u8(text) end
     return (text:gsub('\r\n', '\n'))
@@ -1420,7 +1543,7 @@ local function refreshNotes()
     for _, entry in ipairs(listDir(NOTES_DIR)) do
         local fileName = entry.name:match('^(.+)%.[tT][xX][tT]$')
         if fileName and not entry.isDir then
-            local name = u8(fileName)
+            local name = fileName
             local text = readNote(name) or ''
             local note = { name = name, hay = lowerRu(name .. '\n' .. text), tags = {} }
             for tag in (' ' .. text:gsub('\n', ' \n ')):gmatch('%s(#[^%s%p]+)') do
@@ -1464,23 +1587,20 @@ end
 local function saveNote()
     local name = cleanName(ffi.string(ns.title))
     if name == '' then return notify('Введи название заметки.') end
-    if name ~= ns.current and doesFileExist(notePath(name)) then
+    if name ~= ns.current and fs.exists(notePath(name)) then
         return notify('Заметка с таким названием уже есть.')
     end
     if not ensureDir(NOTES_DIR) then return notify('Не удалось создать папку заметок.') end
-    local f = io.open(notePath(name), 'wb')
-    if not f then return notify('Не удалось сохранить заметку.') end
     local text = ffi.string(ns.text)
-    f:write((text:gsub('\n', '\r\n')))
-    f:close()
-    if ns.current and ns.current ~= name then os.remove(notePath(ns.current)) end
+    if not fs.write(notePath(name), (text:gsub('\n', '\r\n'))) then return notify('Не удалось сохранить заметку.') end
+    if ns.current and ns.current ~= name then fs.remove(notePath(ns.current)) end
     ns.current, ns.editing, ns.confirm, ns.view = name, false, false, text
     ns.doc = parseMarkdown(text)
     refreshNotes()
 end
 
 local function deleteNote()
-    if ns.current then os.remove(notePath(ns.current)) end
+    if ns.current then fs.remove(notePath(ns.current)) end
     ns.current, ns.editing, ns.confirm, ns.view = nil, false, false, ''
     refreshNotes()
 end
@@ -2280,6 +2400,7 @@ function tabs.foldersTab(W)
         end
     end)
     if removeIndex then
+        cfg.hidden[cfg.categories[removeIndex]] = true
         table.remove(cfg.categories, removeIndex)
         saveConfig()
     end
@@ -2451,8 +2572,8 @@ function tabs.reportTab(W)
     if button('primary', 'Собрать отчёт', half) then buildReport() end
     imgui.SameLine()
     if button('card', 'Открыть журнал', half) then
-        local path = rootDir() .. '\\' .. cp('Журнал.txt')
-        if doesFileExist(path) then openPath(path) else notify('Журнал за эту неделю пока пуст.') end
+        local path = rootDir() .. '\\Журнал.txt'
+        if fs.exists(path) then openPath(path) else notify('Журнал за эту неделю пока пуст.') end
     end
 end
 
@@ -2747,7 +2868,7 @@ function tabs.generalTab(W)
         end
         imgui.SameLine()
         if button('card', 'Убрать фото', side) then
-            os.remove(avatar.path)
+            os.remove(avatar.ansi)
             avatar.dirty = true
         end
         dim('Перед этим разверни камеру лицом к персонажу. Меню закроется на секунду.')
@@ -3448,8 +3569,8 @@ local function sidebar(width, height)
             pcall(imgui.ReleaseTexture, avatar.texture)
             avatar.texture = nil
         end
-        if doesFileExist(avatar.path) then
-            local ok, texture = pcall(imgui.CreateTextureFromFile, avatar.path)
+        if doesFileExist(avatar.ansi) then
+            local ok, texture = pcall(imgui.CreateTextureFromFile, avatar.ansi)
             if ok then avatar.texture = texture end
         end
     end
@@ -3986,7 +4107,7 @@ function main()
     ffi.copy(booking.place, cfg.interviewPlace:sub(1, 90))
     ffi.copy(term.input, cfg.termStart:sub(1, 15))
     ensureDir(BASE_DIR)
-    os.remove(TEMP_FILE)
+    fs.remove(TEMP_FILE)
     refreshStats()
 
     gameWindow = ffi.cast('void*', readMemory(0x00C8CF88, 4, false))
