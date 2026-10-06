@@ -113,8 +113,11 @@ local cfg = {
     termStart = '',
     termDays = 30,
     termExtra = 0,
-    keys = { shot = 0, menu = 0, wheel = 0 },
+    keys = { shot = 0, menu = 0, wheel = 0, radio = 0 },
+    radioKeySeeded = false,
     wheelSeeded = false,
+    wheelKeySeeded = false,
+    menuKeySeeded = false,
     accent = 1,
     online = {},
     onlineClean = {},
@@ -200,6 +203,19 @@ local function loadConfig()
     cfg.delay = math.floor(cfg.delay)
     cfg.keys.shot, cfg.keys.menu = tonumber(cfg.keys.shot) or 0, tonumber(cfg.keys.menu) or 0
     cfg.keys.wheel = tonumber(cfg.keys.wheel) or 0
+    if not cfg.wheelKeySeeded then
+        cfg.wheelKeySeeded = true
+        if cfg.keys.wheel == 0 then cfg.keys.wheel = 0x200 + 0x52 end
+    end
+    cfg.keys.radio = tonumber(cfg.keys.radio) or 0
+    if not cfg.radioKeySeeded then
+        cfg.radioKeySeeded = true
+        if cfg.keys.radio == 0 then cfg.keys.radio = 0x72 end
+    end
+    if not cfg.menuKeySeeded then
+        cfg.menuKeySeeded = true
+        if cfg.keys.menu == 0 then cfg.keys.menu = 0x74 end
+    end
     if not cfg.wheelSeeded then
         cfg.wheelSeeded = true
         local presets = {
@@ -226,6 +242,38 @@ local function loadConfig()
         saveConfig()
     end
     if cfg.weekStart ~= 0 then cfg.weekStart = 1 end
+
+    local importPath = getWorkingDirectory() .. '\\config\\TimeShot_import.json'
+    local source = io.open(importPath, 'r')
+    if source then
+        local parsed, list = pcall(decodeJson, source:read('*a'))
+        source:close()
+        os.remove(importPath)
+        local added = 0
+        for _, item in ipairs(parsed and type(list) == 'table' and list or {}) do
+            if type(item) == 'table' and type(item.name) == 'string' and type(item.text) == 'string' then
+                local exists = false
+                for _, bind in ipairs(cfg.binds) do
+                    if bind.name == item.name then exists = true end
+                end
+                if not exists then
+                    cfg.binds[#cfg.binds + 1] = {
+                        name = item.name,
+                        cmd = type(item.cmd) == 'string' and item.cmd or '',
+                        delay = tonumber(item.delay) or 2500,
+                        text = item.text,
+                        key = tonumber(item.key) or 0,
+                        wheel = item.wheel == true,
+                    }
+                    added = added + 1
+                end
+            end
+        end
+        if added > 0 then
+            saveConfig()
+            notify('Импортировано биндов: ' .. added .. '. Они в разделе «Биндер».')
+        end
+    end
 
     local cutoff = os.date('%Y-%m-%d', os.time() - 30 * 86400)
     for _, days in ipairs({ cfg.online, cfg.onlineClean }) do
@@ -1453,7 +1501,7 @@ local function takeAvatar(reopenMenu)
 end
 
 local RESERVED_COMMANDS = { t = true, tmenu = true, td = true, tn = true, tnotes = true, tstop = true, tavatar = true,
-    tupdate = true, tw = true }
+    tupdate = true }
 
 local function expandBindLine(line, extra)
     local nick = myNick()
@@ -1635,7 +1683,7 @@ function wheel.show()
     end
     if #items == 0 then return notify('В круговом меню пусто: отметь нужные бинды галочкой «В круговом меню».') end
     local id = wheel.findTarget()
-    if not id then return notify('Рядом нет игрока: подойди ближе или наведи на него прицел.') end
+    if not id then return notify('Круговое меню: рядом нет игрока — подойди ближе или наведи на него прицел.') end
     wheel.items, wheel.prompt = items, nil
     wheel.target = { id = id, nick = sampGetPlayerNickname(id) }
     wheel.open[0] = true
@@ -1718,6 +1766,7 @@ function hotkeys.fire(code)
     end
     if code == cfg.keys.shot then cmdShot() end
     if code == cfg.keys.wheel then wheel.show() end
+    if code == cfg.keys.radio then radioWindow[0] = true end
     for _, bind in ipairs(cfg.binds) do
         if type(bind) == 'table' and tonumber(bind.key) == code then
             runBind(bind)
@@ -1743,8 +1792,14 @@ function hotkeys.message(msg, key, lparam)
     end
     if bit.band(tonumber(lparam) or 0, 0x40000000) ~= 0 then return false end
     if isPauseMenuActive() or sampIsChatInputActive() or sampIsDialogActive() then return false end
+    if radioWindow[0] and cfg.keys.radio ~= 0 and hotkeys.code(key) == cfg.keys.radio then
+        radioWindow[0] = false
+        return false
+    end
     if pickWindow[0] or radioWindow[0] or (menuWindow[0] and inputActive) or wheel.prompt then return false end
-    hotkeys.fire(hotkeys.code(key))
+    local code = hotkeys.code(key)
+    hotkeys.fire(code)
+    if code == cfg.keys.menu then consumeWindowMessage(true, false) end
     return false
 end
 
@@ -2532,6 +2587,11 @@ function tabs.generalTab(W)
         txt('Круговое меню действий с игроком')
         alignRight(w, 190)
         hotkeys.button('wheel', cfg.keys.wheel, 190)
+        divider(w)
+        imgui.AlignTextToFramePadding()
+        txt('Рация департамента, как команда /td')
+        alignRight(w, 190)
+        hotkeys.button('radio', cfg.keys.radio, 190)
         dim('Нажми кнопку, затем клавишу — можно с Ctrl, Alt или Shift. Esc — отмена, Backspace — убрать.')
         dim('Клавиши для биндов задаются в разделе «Биндер». В чате и окнах клавиши не срабатывают.')
     end)
@@ -2589,7 +2649,6 @@ function tabs.generalTab(W)
             { '/tstop', 'остановить бинд' },
             { '/tavatar', 'сфотографировать персонажа для аватара' },
             { '/tupdate', 'проверить обновление' },
-            { '/tw', 'круговое меню действий с игроком рядом' },
         }
         for i, command in ipairs(commands) do
             if i > 1 then divider(w) end
@@ -2941,11 +3000,16 @@ function tabs.binderPanel(W)
     imgui.Checkbox('Показывать в круговом меню — действие с игроком рядом', bs.wheel)
 
     label('ТЕКСТ — КАЖДАЯ СТРОКА УХОДИТ ОТДЕЛЬНЫМ СООБЩЕНИЕМ')
+    local hints = {
+        'Подстановки: {nick} {id} {rank} {tag} {time} {date}. Строки с // пропускаются, длинные делятся сами. Стоп: /tstop',
+        'Для кругового меню: {tid} и {tname} — ID и имя игрока рядом, {trank} и {reason} — скрипт спросит ранг и причину.',
+    }
+    local reserved = 8 + 27
+    for _, hint in ipairs(hints) do reserved = reserved + imgui.CalcTextSize(hint, nil, false, w).y + 8 end
     imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text),
-        imgui.ImVec2(w, imgui.GetContentRegionAvail().y - 104))
+        imgui.ImVec2(w, math.max(80, imgui.GetContentRegionAvail().y - reserved)))
     imgui.PushTextWrapPos(imgui.GetCursorPosX() + w)
-    dim('Подстановки: {nick} {id} {rank} {tag} {time} {date}. Строки с // пропускаются, длинные делятся сами. Стоп: /tstop')
-    dim('Для кругового меню: {tid} и {tname} — ID и имя игрока рядом, {trank} и {reason} — скрипт спросит ранг и причину.')
+    for _, hint in ipairs(hints) do dim(hint) end
     imgui.PopTextWrapPos()
 
     if button('primary', 'Сохранить', 130) then saveBind() end
@@ -3301,13 +3365,14 @@ local function sidebar(width, height)
     gap(2)
 
     if fonts.nav then imgui.PushFont(fonts.nav) end
-    imgui.PushStyleVarVec2(imgui.StyleVar.ButtonTextAlign, imgui.ImVec2(0.12, 0.5))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ButtonTextAlign, imgui.ImVec2(0, 0.5))
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(14, 5))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 3))
     for i, item in ipairs(NAV) do
         if item.group then
             if i > 1 then gap(5) end
             if fonts.bold then imgui.PushFont(fonts.bold) end
-            imgui.SetCursorPosX(left + 6)
+            imgui.SetCursorPosX(left + 4)
             dim(item.group)
             if fonts.bold then imgui.PopFont() end
         end
@@ -3322,7 +3387,7 @@ local function sidebar(width, height)
                 imgui.GetColorU32Vec4(COLOR.accent), 2)
         end
     end
-    imgui.PopStyleVar(2)
+    imgui.PopStyleVar(3)
     if fonts.nav then imgui.PopFont() end
 
     if fonts.bold then imgui.PushFont(fonts.bold) end
@@ -3784,7 +3849,6 @@ function main()
         if binder.running then binder.stop = true else notify('Сейчас ни один бинд не запущен.') end
     end)
     sampRegisterChatCommand('tavatar', function() takeAvatar(false) end)
-    sampRegisterChatCommand('tw', wheel.show)
     sampRegisterChatCommand('tupdate', function() update.check(true) end)
     registerBinds()
     local function toggleNotes()
@@ -3799,7 +3863,17 @@ function main()
     end
     sampRegisterChatCommand('tn', toggleNotes)
     sampRegisterChatCommand('tnotes', toggleNotes)
-    sampAddChatMessage(u8:decode('TimeShot {FFFFFF}by {FFD166}jalisco {808080}| {4FA3FF}/t {FFFFFF}- скриншот {808080}| {4FA3FF}/tmenu {FFFFFF}- меню {808080}| {4FA3FF}/td {FFFFFF}- чат департамента'), 0x4FA3FF)
+    local function shortcut(code, command)
+        return '{4FA3FF}' .. (code ~= 0 and hotkeys.name(code) or command) .. '{FFFFFF}'
+    end
+    sampAddChatMessage(cp('TimeShot {FFFFFF}' .. update.current() .. ' {808080}by {FFD166}jalisco {808080}— скрипт загружен'), 0x4FA3FF)
+    local hints = {
+        shortcut(cfg.keys.menu, '/tmenu') .. ' меню',
+        shortcut(cfg.keys.shot, '/t') .. ' скриншот с /time',
+        shortcut(cfg.keys.radio, '/td') .. ' рация департамента',
+    }
+    if cfg.keys.wheel ~= 0 then hints[#hints + 1] = shortcut(cfg.keys.wheel, '') .. ' действия с игроком рядом' end
+    sampAddChatMessage(cp(table.concat(hints, ' {808080}| ')), 0xFFFFFF)
 
     wait(3000)
     if BASE_FALLBACK then
