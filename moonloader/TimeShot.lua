@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.9')
+script_version('1.0.10')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -1574,6 +1574,7 @@ local function runBind(bind, extra)
                 while os.clock() < resume and not binder.stop do wait(50) end
             end
         end
+        if not binder.stop then wait(1200) end
         notify(binder.stop and 'Бинд остановлен.' or ('Бинд «' .. bind.name .. '» завершён.'))
         binder.running = false
     end)
