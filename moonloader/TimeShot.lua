@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.13')
+script_version('1.0.14')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -274,6 +274,7 @@ bs.delay = new.int(2500)
 bs.index = nil
 bs.confirm = false
 bs.wheel = new.bool(false)
+bs.group = new.char[64]()
 local binder = { running = false, stop = false, name = '', index = 0, total = 0, commands = {} }
 local inputActive = false
 local onlineEdit = { day = nil, busy = false, hours = new.int(0), minutes = new.int(0), cleanHours = new.int(0), cleanMinutes = new.int(0) }
@@ -304,7 +305,11 @@ local function notify(text)
     sampAddChatMessage(u8:decode('[TimeShot] {FFFFFF}' .. text), 0x4FA3FF)
 end
 
+local cfgLoaded = false
+
 local function saveConfig()
+    -- до loadConfig в cfg лежат значения по умолчанию: запись затёрла бы настройки пользователя
+    if not cfgLoaded then return end
     local f = io.open(CONFIG_PATH, 'w')
     if f then
         f:write(encodeJson(cfg))
@@ -324,6 +329,7 @@ local function loadConfig()
             if type(data[key]) == type(default) then cfg[key] = data[key] end
         end
     end
+    cfgLoaded = true
     cfg.delay = math.floor(cfg.delay)
     cfg.keys.shot, cfg.keys.menu = tonumber(cfg.keys.shot) or 0, tonumber(cfg.keys.menu) or 0
     cfg.keys.wheel = tonumber(cfg.keys.wheel) or 0
@@ -1721,6 +1727,7 @@ local function selectBind(index)
     bs.delay[0] = tonumber(bind.delay) or 2500
     bs.key = tonumber(bind.key) or 0
     bs.wheel[0] = bind.wheel == true
+    setBuffer(bs.group, type(bind.group) == 'string' and bind.group or '')
 end
 
 local function newBind()
@@ -1731,6 +1738,7 @@ local function newBind()
     bs.delay[0] = 2500
     bs.key = 0
     bs.wheel[0] = false
+    setBuffer(bs.group, '')
 end
 
 local function saveBind()
@@ -1754,8 +1762,9 @@ local function saveBind()
             return false
         end
     end
+    local group = ffi.string(bs.group):gsub('^%s+', ''):gsub('%s+$', '')
     local bind = { name = name, cmd = command, delay = bs.delay[0], text = ffi.string(bs.text), key = bs.key or 0,
-        wheel = bs.wheel[0] }
+        wheel = bs.wheel[0], group = group }
     if bs.index then
         cfg.binds[bs.index] = bind
     else
@@ -1819,14 +1828,23 @@ function wheel.show()
         wheel.open[0] = false
         return
     end
-    local items = {}
+    local items, groups = {}, {}
     for _, bind in ipairs(cfg.binds) do
-        if type(bind) == 'table' and bind.wheel == true and #items < 8 then items[#items + 1] = bind end
+        if type(bind) == 'table' and bind.wheel == true then
+            local group = type(bind.group) == 'string' and bind.group or ''
+            if group == '' then
+                if #items < 8 then items[#items + 1] = { name = tostring(bind.name), bind = bind } end
+            elseif groups[group] then
+                if #groups[group].children < 8 then table.insert(groups[group].children, bind) end
+            elseif #items < 8 then
+                groups[group] = { name = group, children = { bind } }
+                items[#items + 1] = groups[group]
+            end
+        end
     end
     if #items == 0 then return notify('В круговом меню пусто: отметь нужные бинды галочкой «В круговом меню».') end
     local targets = wheel.findTargets()
-    if #targets == 0 then return notify('Круговое меню: рядом нет игрока — подойди ближе или наведи на него прицел.') end
-    wheel.items, wheel.prompt = items, nil
+    wheel.items, wheel.prompt, wheel.expanded = items, nil, nil
     wheel.targets, wheel.index, wheel.target = targets, 1, targets[1]
     wheel.open[0] = true
 end
@@ -1834,15 +1852,18 @@ end
 function wheel.run(bind)
     local target = wheel.target
     wheel.open[0], wheel.prompt = false, nil
-    runBind(bind, {
-        tid = tostring(target.id),
-        tname = (target.nick:gsub('_', ' ')),
+    local extra = {
         trank = tostring(wheel.rank[0]),
         reason = (ffi.string(wheel.reason):gsub('^%s+', ''):gsub('%s+$', '')),
-    })
+    }
+    if target then extra.tid, extra.tname = tostring(target.id), (target.nick:gsub('_', ' ')) end
+    runBind(bind, extra)
 end
 
 function wheel.choose(bind)
+    if not wheel.target and (bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)) then
+        return notify('Бинд «' .. tostring(bind.name) .. '» работает с игроком рядом — подойди ближе или наведи на него прицел.')
+    end
     local needRank = bind.text:find('{trank}', 1, true) ~= nil
     local needReason = bind.text:find('{reason}', 1, true) ~= nil
     if needRank or needReason then
@@ -1959,6 +1980,14 @@ function hotkeys.fire(code)
 end
 
 function hotkeys.message(msg, key, lparam)
+    -- средняя и боковые кнопки мыши обрабатываются как обычные клавиши
+    if msg == 0x207 or msg == 0x208 then
+        msg, key, lparam = msg == 0x207 and 0x100 or 0x101, 0x04, 0
+    elseif msg == 0x20B or msg == 0x20C then
+        local side = bit.band(bit.rshift(tonumber(key) or 0, 16), 0xFFFF)
+        if side ~= 1 and side ~= 2 then return false end
+        msg, key, lparam = msg == 0x20B and 0x100 or 0x101, 0x04 + side, 0
+    end
     local pressed = msg == 0x100 or msg == 0x104
     local released = msg == 0x101 or msg == 0x105
     if not pressed and not released then return false end
@@ -2837,7 +2866,7 @@ function tabs.generalTab(W)
         hotkeys.button('menu', cfg.keys.menu, 190)
         divider(w)
         imgui.AlignTextToFramePadding()
-        txt('Круговое меню действий с игроком')
+        txt('Круговое меню биндов')
         alignRight(w, 190)
         hotkeys.button('wheel', cfg.keys.wheel, 190)
         divider(w)
@@ -2846,6 +2875,7 @@ function tabs.generalTab(W)
         alignRight(w, 190)
         hotkeys.button('radio', cfg.keys.radio, 190)
         dim('Нажми кнопку, затем клавишу — можно с Ctrl, Alt или Shift. Esc — отмена, Backspace — убрать.')
+        dim('Подходят и кнопки мыши: средняя и две боковые.')
         dim('Клавиши для биндов задаются в разделе «Биндер». В чате и окнах клавиши не срабатывают.')
     end)
 
@@ -3196,8 +3226,38 @@ function tabs.notesPanel(W)
     imgui.PopStyleVar(1)
 end
 
+bs.keys = {
+    { 'Мой ник', '{nick}', row = 1 },
+    { 'Мой ID', '{id}', row = 1 },
+    { 'Моё звание', '{rank}', row = 1 },
+    { 'Тег организации', '{tag}', row = 1 },
+    { 'Время', '{time}', row = 1 },
+    { 'Дата', '{date}', row = 1 },
+    { 'ID игрока', '{tid}', 'ID игрока, выбранного в круговом меню', row = 2 },
+    { 'Имя игрока', '{tname}', 'имя игрока, выбранного в круговом меню', row = 2 },
+    { 'Ранг', '{trank}', 'перед запуском скрипт спросит ранг', row = 2 },
+    { 'Причина', '{reason}', 'перед запуском скрипт спросит причину', row = 2 },
+}
+do
+    local ready, callback = pcall(ffi.cast, 'ImGuiInputTextCallback', function(data)
+        pcall(function()
+            if bs.pending then
+                local text = bs.pending
+                bs.pending = nil
+                local pos = math.min(bs.cursor or 0, data.BufTextLen)
+                data:InsertChars(pos, text)
+                data.CursorPos = pos + #text
+                data.SelectionStart, data.SelectionEnd = data.CursorPos, data.CursorPos
+            end
+            bs.cursor = data.CursorPos
+        end)
+        return 0
+    end)
+    bs.callback = ready and callback or nil
+end
+
 function tabs.binderPanel(W)
-    local LIST = 220
+    local LIST = 250
     local w = W - LIST - 12
     local childFlags = imgui.WindowFlags.AlwaysUseWindowPadding
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 10))
@@ -3207,10 +3267,54 @@ function tabs.binderPanel(W)
     imgui.BeginChild('##binds_list', imgui.ImVec2(LIST, imgui.GetContentRegionAvail().y), false, childFlags)
     if #cfg.binds == 0 then dim('Пока пусто.') end
     imgui.PushStyleVarVec2(imgui.StyleVar.ButtonTextAlign, imgui.ImVec2(0.06, 0.5))
-    for i, bind in ipairs(cfg.binds) do
+    local function row(i, indent)
+        local bind = cfg.binds[i]
         local title = tostring(bind.name) .. (bind.cmd ~= '' and ('   /' .. bind.cmd) or '')
             .. ((tonumber(bind.key) or 0) ~= 0 and ('   [' .. hotkeys.name(bind.key) .. ']') or '')
-        if button(i == bs.index and 'primary' or 'card', title .. '##bind' .. i, LIST - 30) then selectBind(i) end
+        if indent > 0 then imgui.Indent(indent) end
+        if button(i == bs.index and 'primary' or 'card', title .. '##bind' .. i, LIST - 30 - indent) then selectBind(i) end
+        if indent > 0 then imgui.Unindent(indent) end
+    end
+    -- дерево повторяет круговое меню: сектора по порядку, под названием подменю — его бинды
+    local order, groups, plain = {}, {}, {}
+    for i, bind in ipairs(cfg.binds) do
+        if bind.wheel == true then
+            local name = type(bind.group) == 'string' and bind.group or ''
+            if name == '' then
+                order[#order + 1] = i
+            elseif groups[name] then
+                table.insert(groups[name], i)
+            else
+                groups[name] = { i }
+                order[#order + 1] = name
+            end
+        else
+            plain[#plain + 1] = i
+        end
+    end
+    if #order > 0 then
+        label('КРУГОВОЕ МЕНЮ')
+        for _, entry in ipairs(order) do
+            if type(entry) == 'number' then
+                row(entry, 0)
+            else
+                gap(2)
+                txt(entry)
+                imgui.SameLine(0, 6)
+                dim('подменю · ' .. #groups[entry])
+                local top = imgui.GetCursorScreenPos()
+                for _, i in ipairs(groups[entry]) do row(i, 16) end
+                local bottom = imgui.GetCursorScreenPos()
+                imgui.GetWindowDrawList():AddLine(imgui.ImVec2(top.x + 5, top.y), imgui.ImVec2(top.x + 5, bottom.y - 6),
+                    imgui.GetColorU32Vec4(COLOR.accent), 2)
+                gap(2)
+            end
+        end
+        gap(6)
+    end
+    if #plain > 0 then
+        label(#order > 0 and 'ВНЕ МЕНЮ — ПО КОМАНДЕ ИЛИ КЛАВИШЕ' or 'БИНДЫ')
+        for _, i in ipairs(plain) do row(i, 0) end
     end
     imgui.PopStyleVar(1)
     imgui.EndChild()
@@ -3250,20 +3354,82 @@ function tabs.binderPanel(W)
     imgui.SliderInt('##bind_delay', bs.delay, 500, 10000, '%d мс')
     imgui.PopItemWidth()
 
-    imgui.Checkbox('Показывать в круговом меню — действие с игроком рядом', bs.wheel)
+    imgui.Checkbox('Показывать в круговом меню', bs.wheel)
+
+    local rightEdge, described
+    local function chip(kind, text, first)
+        if not first then
+            imgui.SameLine(0, 6)
+            if imgui.GetCursorPosX() + imgui.CalcTextSize(text, nil, true).x + 20 > rightEdge then imgui.NewLine() end
+        end
+        return button(kind, text, 0)
+    end
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 5))
+
+    if bs.wheel[0] then
+        local current = ffi.string(bs.group)
+        rightEdge = imgui.GetCursorPosX() + w
+        imgui.AlignTextToFramePadding()
+        dim('Подменю')
+        imgui.SameLine(0, 10)
+        if chip(current == '' and 'primary' or 'card', 'Без подменю##group', true) then setBuffer(bs.group, '') end
+        local seen = {}
+        for _, bind in ipairs(cfg.binds) do
+            local name = type(bind) == 'table' and type(bind.group) == 'string' and bind.group or ''
+            if name ~= '' and not seen[name] then
+                seen[name] = true
+                if chip(name == current and 'primary' or 'card', name .. '##group_' .. name) then setBuffer(bs.group, name) end
+            end
+        end
+        imgui.SameLine(0, 6)
+        if imgui.GetCursorPosX() + 200 > rightEdge then imgui.NewLine() end
+        imgui.PushItemWidth(200)
+        imgui.InputText('##bind_group', bs.group, ffi.sizeof(bs.group))
+        imgui.PopItemWidth()
+        if bs.group[0] == 0 and not imgui.IsItemActive() then
+            local corner = imgui.GetItemRectMin()
+            imgui.GetWindowDrawList():AddText(imgui.ImVec2(corner.x + 10, corner.y + 5),
+                imgui.GetColorU32Vec4(COLOR.dim), 'новое подменю')
+        end
+    end
 
     label('ТЕКСТ — КАЖДАЯ СТРОКА УХОДИТ ОТДЕЛЬНЫМ СООБЩЕНИЕМ')
-    local hints = {
-        'Подстановки: {nick} {id} {rank} {tag} {time} {date}. Строки с // пропускаются, длинные делятся сами. Стоп: /tstop',
-        'Для кругового меню: {tid} и {tname} — ID и имя игрока рядом, {trank} и {reason} — скрипт спросит ранг и причину.',
-    }
-    local reserved = 8 + 27
-    for _, hint in ipairs(hints) do reserved = reserved + imgui.CalcTextSize(hint, nil, false, w).y + 8 end
-    imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text),
-        imgui.ImVec2(w, math.max(80, imgui.GetContentRegionAvail().y - reserved)))
-    imgui.PushTextWrapPos(imgui.GetCursorPosX() + w)
-    for _, hint in ipairs(hints) do dim(hint) end
-    imgui.PopTextWrapPos()
+    for row = 1, 2 do
+        rightEdge = imgui.GetCursorPosX() + w
+        imgui.AlignTextToFramePadding()
+        dim(row == 1 and 'Вставить' or 'Игрок рядом')
+        imgui.SameLine(0, 10)
+        local first = true
+        for _, key in ipairs(bs.keys) do
+            if key.row == row then
+                if chip('card', key[1] .. '##key_' .. key[2], first) then
+                    if bs.callback then
+                        bs.pending, bs.refocus = key[2], true
+                    else
+                        setBuffer(bs.text, ffi.string(bs.text) .. key[2])
+                    end
+                end
+                first = false
+                if imgui.IsItemHovered() then
+                    described = key[2] .. ' — ' .. (key[3] or ('сейчас подставится: ' .. expandBindLine(key[2])))
+                end
+            end
+        end
+    end
+    imgui.PopStyleVar(1)
+
+    local height = math.max(80, imgui.GetContentRegionAvail().y - (8 + 27 + imgui.CalcTextSize('A').y + 8))
+    if bs.callback then
+        if bs.refocus then
+            bs.refocus = false
+            imgui.SetKeyboardFocusHere()
+        end
+        imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text), imgui.ImVec2(w, height),
+            imgui.InputTextFlags.CallbackAlways, bs.callback)
+    else
+        imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text), imgui.ImVec2(w, height))
+    end
+    dim(described or 'Строки с // пропускаются, длинные делятся сами. Остановить бинд: /tstop')
 
     if button('primary', 'Сохранить', 130) then saveBind() end
     imgui.SameLine()
@@ -3280,6 +3446,7 @@ function tabs.binderPanel(W)
 
     imgui.PopStyleVar(1)
 end
+pcall(jit.off, tabs.binderPanel, true)
 
 local games = {
     tab = 10,
@@ -3729,7 +3896,7 @@ function wheel.drawPrompt(sx, sy)
     if fonts.heading then imgui.PushFont(fonts.heading) end
     txt(prompt.bind.name)
     if fonts.heading then imgui.PopFont() end
-    dim((wheel.target.nick:gsub('_', ' ')) .. ' [' .. wheel.target.id .. ']')
+    if wheel.target then dim((wheel.target.nick:gsub('_', ' ')) .. ' [' .. wheel.target.id .. ']') end
     imgui.Dummy(imgui.ImVec2(W, 2))
     if prompt.rank then
         label('НОВЫЙ РАНГ')
@@ -3753,7 +3920,7 @@ function wheel.drawPrompt(sx, sy)
 end
 
 imgui.OnFrame(function() return wheel.open[0] end, function()
-    if not wheel.target or #wheel.items == 0 then
+    if #wheel.items == 0 then
         wheel.open[0] = false
         return
     end
@@ -3782,10 +3949,24 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
     local mouse = imgui.GetMousePos()
     local dx, dy = mouse.x - cx, mouse.y - cy
     local distance = math.sqrt(dx * dx + dy * dy)
-    local hovered
-    if distance >= inner and distance <= outer + 30 then
-        hovered = math.floor(((math.atan2(dy, dx) - start) % (2 * math.pi)) / step) + 1
-        if hovered > count then hovered = count end
+    local angle = math.atan2(dy, dx)
+    local outer2 = math.max(outer + 60, math.min(outer + 150, sy / 2 - 40))
+    local hovered, hoveredChild
+    if distance >= inner and (distance <= outer or (not wheel.expanded and distance <= outer + 30)) then
+        hovered = math.min(count, math.floor(((angle - start) % (2 * math.pi)) / step) + 1)
+        wheel.expanded = wheel.items[hovered].children and hovered or nil
+    end
+    -- подменю: внешнее кольцо напротив сектора, на который навели
+    local group = wheel.expanded and wheel.items[wheel.expanded]
+    local childStep, childStart
+    if group then
+        local total = #group.children
+        childStep = math.min(0.5, 2 * math.pi / total)
+        childStart = start + (wheel.expanded - 0.5) * step - total * childStep / 2
+        if distance > outer and distance <= outer2 + 30 then
+            local index = math.floor(((angle - childStart) % (2 * math.pi)) / childStep) + 1
+            if index <= total then hoveredChild = index end
+        end
     end
 
     local function point(radius, angle)
@@ -3793,24 +3974,21 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
     end
     local idle, active = imgui.GetColorU32Vec4(COLOR.window), imgui.GetColorU32Vec4(COLOR.accent)
     local textIdle, textActive = imgui.GetColorU32Vec4(COLOR.text), imgui.GetColorU32Vec4(COLOR.onAccent)
-    if fonts.strong then imgui.PushFont(fonts.strong) end
-    for i = 1, count do
-        local from, to = start + (i - 1) * step + 0.015, start + i * step - 0.015
+    local function sector(near, far, from, to, lit, name)
         local pieces = math.max(4, math.ceil((to - from) / 0.08))
-        local fill = i == hovered and active or idle
+        local fill = lit and active or idle
         for piece = 0, pieces - 1 do
             local a, b = from + (to - from) * piece / pieces, from + (to - from) * (piece + 1) / pieces
-            draw:AddQuadFilled(point(inner, a), point(outer, a), point(outer, b), point(inner, b), fill)
+            draw:AddQuadFilled(point(near, a), point(far, a), point(far, b), point(near, b), fill)
         end
 
-        local name = tostring(wheel.items[i].name)
         local first, second = name, nil
         if imgui.CalcTextSize(name).x > 130 then
             local cut = name:find(' ', math.floor(#name / 2), true) or name:find(' ', 1, true)
             if cut then first, second = name:sub(1, cut - 1), name:sub(cut + 1) end
         end
-        local middle = point((inner + outer) / 2, (from + to) / 2)
-        local color = i == hovered and textActive or textIdle
+        local middle = point((near + far) / 2, (from + to) / 2)
+        local color = lit and textActive or textIdle
         local size = imgui.CalcTextSize(first)
         local top = middle.y - (second and size.y or size.y / 2)
         draw:AddText(imgui.ImVec2(middle.x - size.x / 2, top), color, first)
@@ -3819,13 +3997,25 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
             draw:AddText(imgui.ImVec2(middle.x - size2.x / 2, top + size.y + 2), color, second)
         end
     end
+    if fonts.strong then imgui.PushFont(fonts.strong) end
+    for i = 1, count do
+        local item = wheel.items[i]
+        sector(inner, outer, start + (i - 1) * step + 0.015, start + i * step - 0.015,
+            i == hovered or i == wheel.expanded, item.children and (item.name .. ' »') or item.name)
+    end
+    if group then
+        for i, bind in ipairs(group.children) do
+            sector(outer + 8, outer2, childStart + (i - 1) * childStep + 0.01, childStart + i * childStep - 0.01,
+                i == hoveredChild, tostring(bind.name))
+        end
+    end
     if fonts.strong then imgui.PopFont() end
 
     draw:AddCircleFilled(imgui.ImVec2(cx, cy), inner - 8, imgui.GetColorU32Vec4(COLOR.panel), 48)
-    local who = (wheel.target.nick:gsub('_', ' '))
+    local who = wheel.target and (wheel.target.nick:gsub('_', ' ')) or 'Рядом'
     local whoSize = imgui.CalcTextSize(who)
     draw:AddText(imgui.ImVec2(cx - whoSize.x / 2, cy - whoSize.y - 1), textIdle, who)
-    local idText = 'ID ' .. wheel.target.id
+    local idText = wheel.target and ('ID ' .. wheel.target.id) or 'никого нет'
     local idSize = imgui.CalcTextSize(idText)
     draw:AddText(imgui.ImVec2(cx - idSize.x / 2, cy + 2), imgui.GetColorU32Vec4(COLOR.dim), idText)
     local many = #wheel.targets > 1
@@ -3837,9 +4027,10 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
     local hint = many and 'ЛКМ — выбрать     колёсико или клик по центру — другой игрок     ПКМ или Esc — закрыть'
         or 'ЛКМ — выбрать     ПКМ или Esc — закрыть'
     local hintSize = imgui.CalcTextSize(hint)
-    draw:AddText(imgui.ImVec2(cx - hintSize.x / 2, cy + outer + 26), imgui.GetColorU32Vec4(COLOR.text), hint)
+    draw:AddText(imgui.ImVec2(cx - hintSize.x / 2, cy + (group and outer2 or outer) + 26), imgui.GetColorU32Vec4(COLOR.text), hint)
 
-    local found, ped = sampGetCharHandleBySampPlayerId(wheel.target.id)
+    local found, ped = false, nil
+    if wheel.target then found, ped = sampGetCharHandleBySampPlayerId(wheel.target.id) end
     if found and doesCharExist(ped) and isCharOnScreen(ped) then
         local x, y, z = getCharCoordinates(ped)
         local px, py = convert3DCoordsToScreen(x, y, z + 1.1)
@@ -3855,9 +4046,12 @@ imgui.OnFrame(function() return wheel.open[0] end, function()
         wheel.cycle(scroll > 0 and -1 or 1)
     elseif imgui.IsMouseClicked(0) and distance < inner then
         wheel.cycle(1)
-    elseif hovered and imgui.IsMouseClicked(0) then
-        wheel.choose(wheel.items[hovered])
-    elseif imgui.IsMouseClicked(1) then
+    -- выбор и закрытие — по отпусканию кнопки: иначе меню исчезает при зажатой кнопке, и игра получает удар или прицел
+    elseif hoveredChild and imgui.IsMouseReleased(0) then
+        wheel.choose(group.children[hoveredChild])
+    elseif hovered and imgui.IsMouseReleased(0) then
+        if wheel.items[hovered].bind then wheel.choose(wheel.items[hovered].bind) end
+    elseif imgui.IsMouseReleased(1) then
         wheel.open[0] = false
     end
 
@@ -4178,7 +4372,7 @@ function main()
         shortcut(cfg.keys.shot, '/t') .. ' скриншот с /time',
         shortcut(cfg.keys.radio, '/td') .. ' рация департамента',
     }
-    if cfg.keys.wheel ~= 0 then hints[#hints + 1] = shortcut(cfg.keys.wheel, '') .. ' действия с игроком рядом' end
+    if cfg.keys.wheel ~= 0 then hints[#hints + 1] = shortcut(cfg.keys.wheel, '') .. ' круговое меню биндов' end
     sampAddChatMessage(cp(table.concat(hints, ' {808080}| ')), 0xFFFFFF)
 
     wait(3000)
