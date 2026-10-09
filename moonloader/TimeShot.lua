@@ -1,6 +1,6 @@
 script_name('TimeShot')
 script_author('jalisco')
-script_version('1.0.14')
+script_version('1.0.15')
 script_description('/t - /time + screenshot into a report folder, /tmenu - reports and gov tools, /td - department radio')
 
 local ffi = require 'ffi'
@@ -1685,7 +1685,8 @@ local function runBind(bind, extra)
         return notify('Уже идёт бинд «' .. binder.name .. '». Остановить: /tstop')
     end
     if not extra and (bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)) then
-        return notify('Бинд «' .. bind.name .. '» работает с игроком рядом — запускай его из кругового меню.')
+        if binder.prefill(bind) then return end
+        return notify('Бинду «' .. bind.name .. '» нужен игрок: запусти его из кругового меню или задай бинду команду и вводи ID после неё.')
     end
     local lines = bindLines(bind, extra)
     if #lines == 0 then return notify('В бинде «' .. bind.name .. '» нет строк.') end
@@ -1707,12 +1708,63 @@ local function runBind(bind, extra)
     end)
 end
 
+function binder.usage(bind)
+    return '/' .. bind.cmd .. ((bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)) and ' [ID игрока]' or '')
+        .. (bind.text:find('{trank}', 1, true) and ' [ранг 1-9]' or '') .. (bind.text:find('{reason}', 1, true) and ' [причина]' or '')
+end
+
+-- открывает чат с уже набранной командой бинда: остаётся дописать ID и остальное
+function binder.prefill(bind)
+    if type(bind.cmd) ~= 'string' or bind.cmd == '' or RESERVED_COMMANDS[bind.cmd] then return false end
+    lua_thread.create(function()
+        wait(80)
+        sampSetChatInputEnabled(true)
+        sampSetChatInputText('/' .. bind.cmd .. ' ')
+    end)
+    notify('Допиши и нажми Enter: {4FA3FF}' .. binder.usage(bind))
+    return true
+end
+
+-- запуск командой: /команда ID [ранг] [причина] — игрок не обязан стоять рядом
+function binder.fromChat(bind, args)
+    local needTarget = bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)
+    local needRank = bind.text:find('{trank}', 1, true)
+    local needReason = bind.text:find('{reason}', 1, true)
+    if not needTarget and not needRank and not needReason then return runBind(bind) end
+
+    local rest = (tostring(args or ''):gsub('^%s+', ''):gsub('%s+$', ''))
+    if rest == '' then return binder.prefill(bind) end
+    local extra = {}
+    local function fail()
+        notify('Формат: {4FA3FF}' .. binder.usage(bind))
+    end
+    if needTarget then
+        local id, tail = rest:match('^(%d+)%s*(.*)$')
+        id = tonumber(id)
+        if not id then return fail() end
+        local _, me = sampGetPlayerIdByCharHandle(PLAYER_PED)
+        if id ~= me and not sampIsPlayerConnected(id) then return notify('Игрока с ID ' .. id .. ' нет на сервере.') end
+        extra.tid, extra.tname, rest = tostring(id), (sampGetPlayerNickname(id):gsub('_', ' ')), tail
+    end
+    if needRank then
+        local rank, tail = rest:match('^(%d+)%s*(.*)$')
+        rank = tonumber(rank)
+        if not rank or rank < 1 or rank > 9 then return fail() end
+        extra.trank, rest = tostring(rank), tail
+    end
+    if needReason then
+        if rest == '' then return fail() end
+        extra.reason = u8:encode(rest)
+    end
+    runBind(bind, extra)
+end
+
 local function registerBinds()
     for _, command in ipairs(binder.commands) do sampUnregisterChatCommand(command) end
     binder.commands = {}
     for _, bind in ipairs(cfg.binds) do
         if type(bind) == 'table' and type(bind.cmd) == 'string' and bind.cmd ~= '' and not RESERVED_COMMANDS[bind.cmd] then
-            sampRegisterChatCommand(bind.cmd, function() runBind(bind) end)
+            sampRegisterChatCommand(bind.cmd, function(args) binder.fromChat(bind, args) end)
             binder.commands[#binder.commands + 1] = bind.cmd
         end
     end
@@ -1862,7 +1914,11 @@ end
 
 function wheel.choose(bind)
     if not wheel.target and (bind.text:find('{tid}', 1, true) or bind.text:find('{tname}', 1, true)) then
-        return notify('Бинд «' .. tostring(bind.name) .. '» работает с игроком рядом — подойди ближе или наведи на него прицел.')
+        if binder.prefill(bind) then
+            wheel.open[0], wheel.prompt = false, nil
+            return
+        end
+        return notify('Рядом никого нет. Чтобы запускать бинд «' .. tostring(bind.name) .. '» по ID, задай ему команду в биндере.')
     end
     local needRank = bind.text:find('{trank}', 1, true) ~= nil
     local needReason = bind.text:find('{reason}', 1, true) ~= nil
@@ -3233,10 +3289,10 @@ bs.keys = {
     { 'Тег организации', '{tag}', row = 1 },
     { 'Время', '{time}', row = 1 },
     { 'Дата', '{date}', row = 1 },
-    { 'ID игрока', '{tid}', 'ID игрока, выбранного в круговом меню', row = 2 },
-    { 'Имя игрока', '{tname}', 'имя игрока, выбранного в круговом меню', row = 2 },
-    { 'Ранг', '{trank}', 'перед запуском скрипт спросит ранг', row = 2 },
-    { 'Причина', '{reason}', 'перед запуском скрипт спросит причину', row = 2 },
+    { 'ID игрока', '{tid}', 'ID игрока из кругового меню или введённый после команды: /команда ID', row = 2 },
+    { 'Имя игрока', '{tname}', 'имя игрока из кругового меню или по ID после команды', row = 2 },
+    { 'Ранг', '{trank}', 'скрипт спросит ранг, а в команде он идёт после ID: /команда ID ранг', row = 2 },
+    { 'Причина', '{reason}', 'скрипт спросит причину, а в команде она идёт последней: /команда ID причина', row = 2 },
 }
 do
     local ready, callback = pcall(ffi.cast, 'ImGuiInputTextCallback', function(data)
@@ -3397,7 +3453,7 @@ function tabs.binderPanel(W)
     for row = 1, 2 do
         rightEdge = imgui.GetCursorPosX() + w
         imgui.AlignTextToFramePadding()
-        dim(row == 1 and 'Вставить' or 'Игрок рядом')
+        dim(row == 1 and 'Вставить' or 'Игрок')
         imgui.SameLine(0, 10)
         local first = true
         for _, key in ipairs(bs.keys) do
@@ -3429,7 +3485,7 @@ function tabs.binderPanel(W)
     else
         imgui.InputTextMultiline('##bind_text', bs.text, ffi.sizeof(bs.text), imgui.ImVec2(w, height))
     end
-    dim(described or 'Строки с // пропускаются, длинные делятся сами. Остановить бинд: /tstop')
+    dim(described or 'Строки с // пропускаются. Бинд с игроком можно запускать по ID: /команда ID. Остановить: /tstop')
 
     if button('primary', 'Сохранить', 130) then saveBind() end
     imgui.SameLine()
@@ -4252,6 +4308,18 @@ end, function()
     imgui.PopStyleVar(2)
 end)
 widget.HideCursor = true
+
+-- mimgui получает сообщения клавиш только пока что-то рисуется: если оверлеи скрылись при зажатой клавише
+-- (Tab с таблицей игроков, Alt+Tab), отпускание теряется и клавиша остаётся «зажатой» — в поле ввода
+-- залипший Tab без остановки перебирает все поля. Перед каждым кадром сверяем клавиши с реальным состоянием.
+imgui.OnFrame(function()
+    return menuWindow[0] or pickWindow[0] or radioWindow[0] or wheel.open[0]
+end, function()
+    local down = imgui.GetIO().KeysDown
+    for key = 0, 255 do
+        if down[key] and ffi.C.GetKeyState(key) >= 0 then down[key] = false end
+    end
+end, function() end).HideCursor = true
 
 function onWindowMessage(msg, wparam, lparam)
     if msg == 0x112 and bit.band(tonumber(wparam) or 0, 0xFFF0) == 0xF100 then
